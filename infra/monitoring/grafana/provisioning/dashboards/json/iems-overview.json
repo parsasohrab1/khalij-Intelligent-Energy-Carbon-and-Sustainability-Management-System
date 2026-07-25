@@ -1,0 +1,36 @@
+{
+  "title": "iEMS API Overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "API Up",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "targets": [{"expr": "iems_app_up", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request rate",
+      "gridPos": {"h": 8, "w": 12, "x": 6, "y": 0},
+      "targets": [{"expr": "sum(rate(iems_http_requests_total[1m]))", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "p95 latency",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum(rate(iems_http_request_duration_seconds_bucket[5m])) by (le))",
+        "refId": "A"
+      }]
+    },
+    {
+      "type": "timeseries",
+      "title": "5xx rate",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [{"expr": "sum(rate(iems_http_requests_total{status=~\"5..\"}[5m]))", "refId": "A"}]
+    }
+  ]
+}

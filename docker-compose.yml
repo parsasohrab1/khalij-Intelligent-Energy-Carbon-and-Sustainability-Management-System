@@ -1,0 +1,255 @@
+# iEMS — Intelligent Energy, Carbon & Sustainability Management System
+# Local development stack matching SRS §5 architecture.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: iems-api
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      APP_ENV: development
+      APP_DEBUG: "true"
+      SECRET_KEY: ${SECRET_KEY:-dev-secret}
+      POSTGRES_HOST: timescaledb
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-iems}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iems_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-iems}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      ML_MODEL_DIR: data/models
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    volumes:
+      - ./app:/app/app
+      - ./scripts:/app/scripts
+      - ./data:/app/data
+      - ./infra:/app/infra
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - iems
+
+  producer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: iems-producer
+    environment:
+      POSTGRES_HOST: timescaledb
+      REDIS_HOST: redis
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      INGESTION_RATE_HZ: "1.0"
+      INGESTION_SOURCE: simulator
+      PRODUCER_PLANT_CODES: olefin
+      OPC_UA_TAG_MAP_PATH: infra/opcua/tags.yaml
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+      - ./infra:/app/infra
+    command: python -m app.ingestion.producer
+    networks:
+      - iems
+    restart: unless-stopped
+
+  consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: iems-consumer
+    environment:
+      POSTGRES_HOST: timescaledb
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-iems}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iems_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-iems}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_SENSOR_TOPIC: sensor.readings
+      KAFKA_CONSUMER_GROUP: iems-ingestion
+      STALE_DATA_SECONDS: "5"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+      - ./infra:/app/infra
+    command: python -m app.ingestion.consumer
+    networks:
+      - iems
+    restart: unless-stopped
+
+  carbon-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: iems-carbon-scheduler
+    environment:
+      POSTGRES_HOST: timescaledb
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-iems}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iems_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-iems}
+      UNIT_CODES: olefin,pta
+      CARBON_FACTORS_PATH: infra/carbon/emission_factors.yaml
+      CARBON_REPORTS_EXPORT_DIR: data/reports/carbon
+      CARBON_MARKET_STAGING_DIR: data/reports/carbon_market
+      CARBON_REPORT_INTERVAL_SECONDS: "300"
+      CARBON_REPORT_COMPLETED_ONLY: "false"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      consumer:
+        condition: service_started
+    volumes:
+      - ./app:/app/app
+      - ./infra:/app/infra
+      - ./data:/app/data
+    command: python -m app.carbon.scheduler
+    networks:
+      - iems
+    restart: unless-stopped
+
+  ml-trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: iems-ml-trainer
+    environment:
+      POSTGRES_HOST: timescaledb
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-iems}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iems_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-iems}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_EXPERIMENT_NAME: energy-prediction
+      MLFLOW_ENABLED: "true"
+      UNIT_CODES: olefin,pta
+      ML_MODEL_DIR: data/models
+      ML_RETRAIN_INTERVAL_SECONDS: "3600"
+      ML_SYNTHETIC_SAMPLES: "1500"
+      ML_VSG_SAMPLES: "300"
+      ML_MAPE_TARGET: "5.0"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    volumes:
+      - ./app:/app/app
+      - ./infra:/app/infra
+      - ./data:/app/data
+    command: python -m app.ml.trainer
+    networks:
+      - iems
+    restart: unless-stopped
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: iems-timescaledb
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-iems}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iems_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-iems}
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+      - ./infra/db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iems} -d ${POSTGRES_DB:-iems}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - iems
+
+  redis:
+    image: redis:7-alpine
+    container_name: iems-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - iems
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: iems-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - iems
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: iems-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - iems
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.18.0
+    container_name: iems-mlflow
+    ports:
+      - "5000:5000"
+    environment:
+      MLFLOW_BACKEND_STORE_URI: sqlite:///mlflow/mlflow.db
+      MLFLOW_DEFAULT_ARTIFACT_ROOT: /mlflow/artifacts
+    volumes:
+      - mlflow_data:/mlflow
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:///mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+    networks:
+      - iems
+
+volumes:
+  timescaledb_data:
+  redis_data:
+  mlflow_data:
+
+networks:
+  iems:
+    driver: bridge

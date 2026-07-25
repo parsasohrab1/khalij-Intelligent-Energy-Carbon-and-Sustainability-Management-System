@@ -1,0 +1,59 @@
+# OPC-UA / simulator tag map for Phase 1 (FR-DATA-01 / FR-DATA-02)
+# Replace node_id values with real P&ID addresses when connecting to the plant.
+
+plants:
+  olefin:
+    name: Olefin Unit
+    tags:
+      electricity_power_mw:
+        node_id: "ns=2;s=Olefin.Energy.Power_MW"
+        unit: MW
+        description: Electrical power
+      fuel_gas_flow_km3h:
+        node_id: "ns=2;s=Olefin.Fuel.GasFlow_kNm3h"
+        unit: 1000 m3/h
+        description: Natural gas fuel flow
+      steam_flow_tonh:
+        node_id: "ns=2;s=Olefin.Steam.Flow_tph"
+        unit: t/h
+        description: Steam consumption
+      feed_flow_tonh:
+        node_id: "ns=2;s=Olefin.Process.FeedFlow_tph"
+        unit: t/h
+        description: Process feed / production rate
+      reactor_temp_c:
+        node_id: "ns=2;s=Olefin.Reactor.Temp_C"
+        unit: C
+        description: Reactor temperature
+      pressure_bar:
+        node_id: "ns=2;s=Olefin.Reactor.Pressure_bar"
+        unit: bar
+        description: Reactor pressure
+
+  pta:
+    name: PTA Unit
+    tags:
+      electricity_power_mw:
+        node_id: "ns=2;s=PTA.Energy.Power_MW"
+        unit: MW
+        description: Electrical power
+      fuel_gas_flow_km3h:
+        node_id: "ns=2;s=PTA.Fuel.GasFlow_kNm3h"
+        unit: 1000 m3/h
+        description: Natural gas fuel flow
+      steam_flow_tonh:
+        node_id: "ns=2;s=PTA.Steam.Flow_tph"
+        unit: t/h
+        description: Steam consumption
+      feed_flow_tonh:
+        node_id: "ns=2;s=PTA.Process.FeedFlow_tph"
+        unit: t/h
+        description: Process feed / production rate
+      reactor_temp_c:
+        node_id: "ns=2;s=PTA.Reactor.Temp_C"
+        unit: C
+        description: Reactor temperature
+      pressure_bar:
+        node_id: "ns=2;s=PTA.Reactor.Pressure_bar"
+        unit: bar
+        description: Reactor pressure

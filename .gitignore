@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+env/
+
+# Environment & secrets
+.env
+.env.local
+*.pem
+*.key
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Data & ML artifacts
+data/raw/*
+data/processed/*
+data/reports/carbon/*
+data/reports/carbon_market/*
+data/models/*
+data/backups/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/reports/carbon/.gitkeep
+!data/reports/carbon_market/.gitkeep
+!data/models/.gitkeep
+!data/backups/.gitkeep
+mlruns/
+mlartifacts/
+*.csv
+!data/samples/.gitkeep
+
+# Docker volumes / local state
+.docker/
+postgres-data/
+redis-data/
+kafka-data/
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# Logs
+*.log
+logs/

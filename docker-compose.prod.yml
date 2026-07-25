@@ -1,0 +1,65 @@
+# Production-oriented overlay (NFR-REL-01 / NFR-SEC-01)
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  api:
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      AUTH_ENFORCE: "true"
+      AUTH_LOGIN_REQUIRE_2FA: "false"
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://iems.example.com}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
+      MLFLOW_ENABLED: "true"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/readyz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  api-b:
+    profiles: ["ha"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: iems-api-b
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      AUTH_ENFORCE: "true"
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set}
+      POSTGRES_HOST: timescaledb
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-iems}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iems_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-iems}
+      REDIS_HOST: redis
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_ENABLED: "true"
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://iems.example.com}
+    ports:
+      - "8001:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/readyz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - iems
+    restart: unless-stopped

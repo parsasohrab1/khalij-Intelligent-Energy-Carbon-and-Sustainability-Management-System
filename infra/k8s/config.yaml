@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: iems-config
+data:
+  APP_ENV: production
+  APP_DEBUG: "false"
+  AUTH_ENFORCE: "true"
+  CORS_ORIGINS: https://iems.example.com
+  POSTGRES_HOST: timescaledb
+  REDIS_HOST: redis
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  MLFLOW_TRACKING_URI: http://mlflow:5000
+  MLFLOW_ENABLED: "true"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: iems-secrets
+type: Opaque
+stringData:
+  SECRET_KEY: change-me
+  POSTGRES_PASSWORD: change-me
+  POSTGRES_USER: iems
+  POSTGRES_DB: iems

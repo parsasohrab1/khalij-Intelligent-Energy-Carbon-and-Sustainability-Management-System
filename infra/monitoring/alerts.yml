@@ -1,0 +1,31 @@
+groups:
+  - name: iems-reliability
+    rules:
+      - alert: IEMSApiDown
+        expr: up{job="iems-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "iEMS API scrape target is down"
+          description: "Prometheus cannot scrape iems-api for >1m (NFR-REL-01)."
+
+      - alert: IEMSHighLatency
+        expr: histogram_quantile(0.95, sum(rate(iems_http_request_duration_seconds_bucket[5m])) by (le, path)) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "iEMS p95 latency > 3s"
+          description: "Prediction/API latency budget (NFR-PER-01) at risk."
+
+      - alert: IEMSErrorRate
+        expr: |
+          sum(rate(iems_http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(iems_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "iEMS 5xx error rate > 5%"

@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: iems
+    orgId: 1
+    folder: iEMS
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

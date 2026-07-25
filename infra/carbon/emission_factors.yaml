@@ -1,0 +1,28 @@
+# IPCC-style emission factors (FR-CAR-01) — override per plant
+# Units:
+#   natural_gas_kgco2_per_m3  — kg CO2 / m³ natural gas (Scope 1)
+#   steam_kgco2_per_ton       — kg CO2 / ton steam (Scope 1, site boilers)
+#   electricity_kgco2_per_kwh — kg CO2 / kWh purchased grid (Scope 2)
+#
+# Defaults aligned with illustrative IPCC / grid-mix placeholders for Gulf region.
+
+version: "ipcc-placeholder-2026.1"
+source: "IPCC-style plant configuration (replace with verified local factors)"
+
+defaults:
+  natural_gas_kgco2_per_m3: 2.0
+  steam_kgco2_per_ton: 0.3
+  electricity_kgco2_per_kwh: 0.5
+
+plants:
+  olefin:
+    natural_gas_kgco2_per_m3: 2.05
+    steam_kgco2_per_ton: 0.28
+    electricity_kgco2_per_kwh: 0.48
+    notes: "Olefin — higher fuel intensity, slightly cleaner steam boilers"
+
+  pta:
+    natural_gas_kgco2_per_m3: 1.95
+    steam_kgco2_per_ton: 0.32
+    electricity_kgco2_per_kwh: 0.52
+    notes: "PTA — higher electricity share from grid"
