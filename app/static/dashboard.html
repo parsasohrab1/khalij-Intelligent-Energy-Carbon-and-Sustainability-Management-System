@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fa" dir="rtl">
+<html lang="en" dir="ltr">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -114,7 +114,7 @@
 
           <div class="kpis">
             <div class="kpi kpi-plant">
-              <div class="lbl">واحد</div>
+              <div class="lbl">Unit</div>
               <div class="num plant-name"><span id="vPlant">—</span></div>
             </div>
             <div class="kpi"><div class="lbl">Electricity</div><div class="num"><span id="vPower">—</span><span class="unit">MW</span></div></div>
@@ -123,24 +123,41 @@
             <div class="kpi"><div class="lbl">Feed</div><div class="num"><span id="vFeed">—</span><span class="unit">t/h</span></div></div>
           </div>
 
-          <div class="chart-panel">
-            <div class="head">
-              <h2 id="chartTitle">Energy Signal</h2>
-              <span class="chart-meta"><span id="asOf">—</span> · <span id="age">—</span> · <span id="efficiency">—</span></span>
+          <div id="sensorBoard" class="sensor-board hidden">
+            <div class="sensor-board-head">
+              <div>
+                <strong>Sensors · live charts</strong>
+                <p class="hint" id="sensorBoardMeta">Status via green / yellow / red lights</p>
+              </div>
+              <div class="traffic-legend" aria-label="Status legend">
+                <span><i class="tl tl-green on"></i> Green · normal</span>
+                <span><i class="tl tl-yellow on"></i> Yellow · warning</span>
+                <span><i class="tl tl-red on"></i> Red · critical</span>
+              </div>
             </div>
-            <canvas id="chartMain" width="1000" height="280"></canvas>
-            <div class="legend" id="chartLegend"></div>
+            <div class="sensor-grid" id="sensorGrid"></div>
           </div>
 
-          <div class="grid-2">
+          <div id="liveGaugePanels">
             <div class="chart-panel">
-              <div class="head"><h2>Process Efficiency</h2><span class="chart-meta" id="headerMeta">—</span></div>
-              <canvas id="chartGauge" width="480" height="180"></canvas>
+              <div class="head">
+                <h2 id="chartTitle">Energy Signal</h2>
+                <span class="chart-meta"><span id="asOf">—</span> · <span id="age">—</span> · <span id="efficiency">—</span></span>
+              </div>
+              <canvas id="chartMain" width="1000" height="280"></canvas>
+              <div class="legend" id="chartLegend"></div>
             </div>
-            <div class="chart-panel">
-              <div class="head"><h2>Scope Histogram</h2></div>
-              <canvas id="chartHist" width="480" height="180"></canvas>
-              <canvas id="chartScopes" class="sr-only" width="1" height="1"></canvas>
+
+            <div class="grid-2">
+              <div class="chart-panel">
+                <div class="head"><h2>Process Efficiency</h2><span class="chart-meta" id="headerMeta">—</span></div>
+                <canvas id="chartGauge" width="480" height="180"></canvas>
+              </div>
+              <div class="chart-panel">
+                <div class="head"><h2>Scope Histogram</h2></div>
+                <canvas id="chartHist" width="480" height="180"></canvas>
+                <canvas id="chartScopes" class="sr-only" width="1" height="1"></canvas>
+              </div>
             </div>
           </div>
         </section>

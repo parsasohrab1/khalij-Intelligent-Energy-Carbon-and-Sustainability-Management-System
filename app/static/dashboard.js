@@ -21,6 +21,133 @@ let timer = null;
 let lastPoints = [];
 let lastLive = null;
 let chartMode = "carriers";
+let sensorBoardReady = false;
+
+/** All plant sensors shown on SENSOR tab — bands drive green/yellow/red lights. */
+const SENSOR_DEFS = [
+  { key: "electricity_power_mw", label: "Electricity", tag: "Power", unit: "MW", ok: [8, 22], warn: [5, 32], color: C.power },
+  { key: "fuel_gas_flow_km3h", label: "Fuel gas", tag: "FuelGas", unit: "kNm³/h", ok: [60, 160], warn: [40, 190], color: C.fuel },
+  { key: "steam_flow_tonh", label: "Steam", tag: "Steam", unit: "t/h", ok: [15, 55], warn: [8, 70], color: C.steam },
+  { key: "feed_flow_tonh", label: "Feed", tag: "Feed", unit: "t/h", ok: [70, 140], warn: [40, 170], color: C.feed },
+  { key: "reactor_temp_c", label: "Reactor temp", tag: "ReactorTemp", unit: "°C", ok: [380, 420], warn: [360, 440], color: "#c45c26" },
+  { key: "pressure_bar", label: "Pressure", tag: "Pressure", unit: "bar", ok: [8, 18], warn: [5, 22], color: "#3a7ca5" },
+  { key: "energy_efficiency_percent", label: "Efficiency", tag: "Efficiency", unit: "%", ok: [70, 100], warn: [50, 70], color: C.spark, higherBetter: true },
+  { key: "energy_intensity_kgoe_ton", label: "Energy intensity", tag: "EnergyInt", unit: "kgoe/t", ok: [80, 180], warn: [50, 240], color: C.power },
+  { key: "carbon_intensity_kgco2_ton", label: "Carbon intensity", tag: "CarbonInt", unit: "kg/t", ok: [40, 160], warn: [20, 220], color: C.carbon },
+  { key: "carbon_emission_kgco2_ton", label: "Carbon emission", tag: "CarbonEm", unit: "kg/t", ok: [40, 180], warn: [20, 250], color: C.hist },
+  { key: "scope1_kgco2", label: "Scope 1", tag: "Scope1", unit: "kg/h", ok: [0, 250000], warn: [0, 400000], color: "#8a5a12" },
+  { key: "scope2_kgco2", label: "Scope 2", tag: "Scope2", unit: "kg/h", ok: [0, 20000], warn: [0, 40000], color: "#1f4e79" },
+];
+
+function ensureSensorBoard() {
+  if (sensorBoardReady) return;
+  const grid = document.getElementById("sensorGrid");
+  if (!grid) return;
+  grid.innerHTML = SENSOR_DEFS.map((s) => `
+    <article class="sensor-card" id="scard-${s.key}" data-key="${s.key}">
+      <div class="sensor-card-top">
+        <div>
+          <div class="name">${s.label}</div>
+          <div class="tag">${s.tag}</div>
+        </div>
+        <div class="sensor-lights" aria-label="Status">
+          <i class="tl tl-green dim" data-light="ok" title="Normal"></i>
+          <i class="tl tl-yellow dim" data-light="warn" title="Warning"></i>
+          <i class="tl tl-red dim" data-light="bad" title="Critical"></i>
+        </div>
+      </div>
+      <div class="sensor-value-row">
+        <span class="sensor-value" id="sval-${s.key}">—</span>
+        <span class="sensor-unit">${s.unit}</span>
+      </div>
+      <div class="sensor-status-text" id="stxt-${s.key}">—</div>
+      <canvas id="spark-${s.key}" width="320" height="56"></canvas>
+    </article>
+  `).join("");
+  sensorBoardReady = true;
+}
+
+function bandStatus(def, value) {
+  if (value == null || Number.isNaN(Number(value))) {
+    return { level: "bad", text: "No data" };
+  }
+  const v = Number(value);
+  if (def.higherBetter) {
+    if (v >= def.ok[0]) return { level: "ok", text: "Normal" };
+    if (v >= def.warn[0]) return { level: "warn", text: "Warning · low" };
+    return { level: "bad", text: "Critical · too low" };
+  }
+  const [okLo, okHi] = def.ok;
+  const [wLo, wHi] = def.warn;
+  if (v >= okLo && v <= okHi) return { level: "ok", text: "Normal" };
+  if (v >= wLo && v <= wHi) {
+    return { level: "warn", text: v < okLo ? "Warning · low" : "Warning · high" };
+  }
+  return { level: "bad", text: v < wLo ? "Critical · low" : "Critical · high" };
+}
+
+function applyStreamOverride(status, live) {
+  if (!live) return { level: "bad", text: "Stream offline" };
+  if (live.stream_status === "missing" || live.quality === "bad") {
+    return { level: "bad", text: "Bad quality / offline" };
+  }
+  if (live.stream_status === "stale" || live.stream_status === "bad_quality") {
+    if (status.level === "ok") return { level: "warn", text: "Stale stream · " + status.text };
+    return status;
+  }
+  return status;
+}
+
+function setTrafficLights(card, level) {
+  card.querySelectorAll(".tl").forEach((el) => {
+    const lit = el.dataset.light;
+    const on = (level === "ok" && lit === "ok")
+      || (level === "warn" && lit === "warn")
+      || (level === "bad" && lit === "bad");
+    el.classList.toggle("on", on);
+    el.classList.toggle("dim", !on);
+  });
+  card.classList.remove("status-ok", "status-warn", "status-bad");
+  card.classList.add(level === "ok" ? "status-ok" : level === "warn" ? "status-warn" : "status-bad");
+}
+
+function renderSensorBoard() {
+  ensureSensorBoard();
+  const live = lastLive || {};
+  const pts = lastPoints || [];
+  let okN = 0, warnN = 0, badN = 0;
+  SENSOR_DEFS.forEach((def) => {
+    const card = document.getElementById("scard-" + def.key);
+    const valEl = document.getElementById("sval-" + def.key);
+    const txtEl = document.getElementById("stxt-" + def.key);
+    const canvas = document.getElementById("spark-" + def.key);
+    if (!card || !valEl || !txtEl || !canvas) return;
+    const raw = live[def.key];
+    valEl.textContent = fmt(raw, def.key.includes("scope") ? 0 : 2);
+    let status = bandStatus(def, raw);
+    status = applyStreamOverride(status, lastLive);
+    txtEl.textContent = status.text;
+    setTrafficLights(card, status.level);
+    if (status.level === "ok") okN += 1;
+    else if (status.level === "warn") warnN += 1;
+    else badN += 1;
+    drawSpark(canvas, pts, def.key, def.color, 56);
+  });
+  const meta = document.getElementById("sensorBoardMeta");
+  if (meta) {
+    meta.textContent = `Green ${okN} · Yellow ${warnN} · Red ${badN} · live refresh`;
+  }
+}
+
+function syncLivePanels() {
+  const sensorBoard = document.getElementById("sensorBoard");
+  const gaugePanels = document.getElementById("liveGaugePanels");
+  const sensorMode = chartMode === "intensity";
+  if (sensorBoard) sensorBoard.classList.toggle("hidden", !sensorMode);
+  if (gaugePanels) gaugePanels.classList.toggle("hidden", sensorMode);
+  const title = document.getElementById("pageTitle");
+  if (title && sensorMode) title.textContent = "Sensors · charts & traffic lights";
+}
 
 const USER_KEY = "iems_user";
 const ACTIONS_KEY = "iems_actions";
@@ -311,6 +438,11 @@ function drawScopes() {
 
 function redrawCharts() {
   drawSpark(document.getElementById("sideSpark"), lastPoints, "electricity_power_mw", C.spark, 40);
+  syncLivePanels();
+  if (chartMode === "intensity") {
+    renderSensorBoard();
+    return;
+  }
   drawMain();
   drawGauge();
   drawHist();
@@ -409,7 +541,8 @@ document.querySelectorAll("#mainTabs [data-view-tab]").forEach((btn) => {
       setActiveView("live");
       document.querySelectorAll("#mainTabs [data-view-tab]").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      drawMain();
+      syncLivePanels();
+      redrawCharts();
     } else {
       setActiveView(view);
     }
@@ -901,6 +1034,8 @@ refreshAuthChip();
 refreshMe();
 syncShiftCsvLink();
 registerPwa();
+ensureSensorBoard();
+syncLivePanels();
 setInterval(() => {
   document.getElementById("clock").textContent = new Date().toLocaleTimeString("en-GB", { hour12: false });
 }, 1000);

@@ -41,6 +41,8 @@ class EnergyDashboardOut(BaseModel):
     fuel_gas_flow_km3h: float | None = None
     steam_flow_tonh: float | None = None
     feed_flow_tonh: float | None = None
+    reactor_temp_c: float | None = None
+    pressure_bar: float | None = None
     energy_intensity_kgoe_ton: float | None = None
     carbon_emission_kgco2_ton: float | None = None
     carbon_intensity_kgco2_ton: float | None = Field(
@@ -62,6 +64,8 @@ class EnergyHistoryPoint(BaseModel):
     fuel_gas_flow_km3h: float | None = None
     steam_flow_tonh: float | None = None
     feed_flow_tonh: float | None = None
+    reactor_temp_c: float | None = None
+    pressure_bar: float | None = None
     energy_intensity_kgoe_ton: float | None = None
     carbon_emission_kgco2_ton: float | None = None
     carbon_intensity_kgco2_ton: float | None = None

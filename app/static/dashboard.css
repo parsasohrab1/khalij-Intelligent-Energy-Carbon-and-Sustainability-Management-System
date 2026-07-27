@@ -329,6 +329,123 @@ button { cursor: pointer; }
 #chartMain { width: 100%; height: 280px; display: block; background: #fff; }
 #chartGauge, #chartScopes, #chartHist { width: 100%; height: 180px; display: block; background: #fff; }
 
+/* ===== SENSOR board (all sensors + traffic lights) ===== */
+.sensor-board {
+  margin-bottom: 0.85rem;
+}
+.sensor-board.hidden,
+#liveGaugePanels.hidden { display: none !important; }
+.sensor-board-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+.sensor-board-head strong {
+  display: block;
+  color: var(--green-soft);
+  font-size: 0.95rem;
+}
+.traffic-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.1rem;
+  font-size: 0.75rem;
+  color: #bbb;
+}
+.traffic-legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+.tl {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid #222;
+  background: #2a2a2a;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.35);
+  vertical-align: middle;
+}
+.tl.on.tl-green { background: #2ecc40; box-shadow: 0 0 8px rgba(46, 204, 64, 0.55); }
+.tl.on.tl-yellow { background: #ffcc00; box-shadow: 0 0 8px rgba(255, 204, 0, 0.5); }
+.tl.on.tl-red { background: #ff3b30; box-shadow: 0 0 8px rgba(255, 59, 48, 0.55); }
+.tl.dim { opacity: 0.28; }
+
+.sensor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+.sensor-card {
+  background: #0f0f0f;
+  border: 1px solid #2c2c2c;
+  padding: 0.65rem 0.7rem 0.45rem;
+  min-width: 0;
+}
+.sensor-card.status-ok { border-color: #2a5a2a; }
+.sensor-card.status-warn { border-color: #7a6a1a; }
+.sensor-card.status-bad { border-color: #6a1a1a; }
+.sensor-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+.sensor-card .name {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #e8e8e8;
+}
+.sensor-card .tag {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  color: #888;
+  direction: ltr;
+  margin-top: 0.15rem;
+}
+.sensor-lights {
+  display: flex;
+  gap: 0.28rem;
+  direction: ltr;
+}
+.sensor-value-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin-bottom: 0.25rem;
+}
+.sensor-value {
+  font-family: var(--mono);
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #fff;
+  direction: ltr;
+}
+.sensor-unit {
+  font-size: 0.7rem;
+  color: #888;
+}
+.sensor-status-text {
+  font-size: 0.68rem;
+  color: #aaa;
+}
+.sensor-card canvas {
+  width: 100%;
+  height: 56px;
+  display: block;
+  background: #161616;
+  border: 1px solid #2a2a2a;
+}
+
+@media (max-width: 1100px) {
+  .sensor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .sensor-grid { grid-template-columns: 1fr; }
+}
+
 .legend {
   display: flex;
   flex-wrap: wrap;
