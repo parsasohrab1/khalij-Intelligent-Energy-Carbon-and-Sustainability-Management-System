@@ -179,7 +179,18 @@ class Settings(BaseSettings):
     def allow_demo_memory(self) -> bool:
         if self.plant_connect:
             return False
+        # Development defaults to live demo memory so Control/Reporting stay populated
+        if self.app_debug or self.app_env == "development":
+            return True
         return bool(self.demo_prefer_memory or self.demo_memory_only or self.demo_feeder)
+
+    def should_run_demo_feeder(self) -> bool:
+        """Inline 1 Hz feeder for live UI when not in Plant Connect mode."""
+        if self.plant_connect:
+            return False
+        if self.demo_feeder:
+            return True
+        return bool(self.app_debug or self.app_env == "development")
 
     def allow_ml_synthetic(self) -> bool:
         if self.trusted_mode_active:

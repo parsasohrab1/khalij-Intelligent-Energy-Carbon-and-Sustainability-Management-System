@@ -53,12 +53,16 @@ async def lifespan(_app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         logger.warning("Redis init skipped/failed: %s", exc.__class__.__name__)
 
-    if settings.demo_feeder and not settings.plant_connect:
+    if settings.should_run_demo_feeder():
         from app.demo.feeder import DemoFeeder
 
         _feeder_worker = DemoFeeder(settings)
         _feeder_task = asyncio.create_task(_feeder_worker.run_forever())
-        logger.info("Inline demo feeder started (DEMO_FEEDER=true)")
+        logger.info(
+            "Inline demo feeder started (demo_feeder=%s app_env=%s)",
+            settings.demo_feeder,
+            settings.app_env,
+        )
     elif settings.plant_connect:
         logger.info(
             "Plant Connect mode ON — demo feeder disabled; OPC endpoint=%s source=%s",
@@ -155,7 +159,7 @@ def create_app() -> FastAPI:
             "auth_enforce": settings.auth_enforce,
             "oidc_enabled": settings.oidc_enabled,
             "site_code": settings.site_code,
-            "demo_feeder": settings.demo_feeder,
+            "demo_feeder": settings.should_run_demo_feeder(),
             "plant_connect": settings.plant_connect,
             "ingestion_source": settings.ingestion_source,
         }

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_action
+from app.core.config import get_settings
 from app.db.session import get_db
 from app.optimization.apply import (
     ActionWorkflowError,
@@ -131,6 +132,10 @@ async def analyze(
             rows = await persist_recommendations(db, advice_items, simulations)
         except Exception:
             rows = []
+        if not rows and get_settings().allow_demo_memory():
+            from app.demo.memory_recs import memory_recs
+
+            rows = memory_recs.persist(advice_items, simulations)
 
     id_by_plant = {r.plant_code: r.id for r in rows}
     advice_out = [
@@ -170,9 +175,17 @@ async def get_recommendations(
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ) -> list[SetpointAdviceOut]:
-    rows = await list_recommendations(
-        db, plant_code=plant_code, status=status_filter, limit=limit
-    )
+    rows = []
+    try:
+        rows = await list_recommendations(
+            db, plant_code=plant_code, status=status_filter, limit=limit
+        )
+    except Exception:  # noqa: BLE001
+        rows = []
+    if not rows and get_settings().allow_demo_memory():
+        from app.demo.memory_recs import memory_recs
+
+        rows = memory_recs.list(plant_code=plant_code, status=status_filter, limit=limit)
     return [_row_to_advice(r) for r in rows]
 
 
@@ -182,7 +195,13 @@ async def simulate_recommendation(
     model: str = Query(default="elm", pattern="^(elm|lstm)$"),
     db: AsyncSession = Depends(get_db),
 ) -> AdviceSimulationOut:
-    rec = await get_recommendation(db, recommendation_id)
+    from app.demo.memory_recs import memory_recs
+
+    rec = None
+    if memory_recs.is_memory_id(recommendation_id):
+        rec = memory_recs.get(recommendation_id)
+    else:
+        rec = await get_recommendation(db, recommendation_id)
     if rec is None:
         raise HTTPException(status_code=404, detail="Recommendation not found")
 
@@ -205,9 +224,13 @@ async def simulate_recommendation(
         tags=json.loads(rec.tags_json or "[]"),
     )
     sim = simulate_advice(state, advice, model=model)
-    rec.simulated_intensity_delta = sim.intensity_delta
-    rec.simulated_efficiency_delta_pp = sim.efficiency_delta_pp
-    await db.commit()
+    if memory_recs.is_memory_id(recommendation_id):
+        rec.simulated_intensity_delta = sim.intensity_delta
+        rec.simulated_efficiency_delta_pp = sim.efficiency_delta_pp
+    else:
+        rec.simulated_intensity_delta = sim.intensity_delta
+        rec.simulated_efficiency_delta_pp = sim.efficiency_delta_pp
+        await db.commit()
     return AdviceSimulationOut(
         plant_code=sim.plant_code,
         before_intensity=sim.before_intensity,
@@ -229,6 +252,36 @@ async def feedback_recommendation(
     db: AsyncSession = Depends(get_db),
     _user=Depends(require_action("operate")),
 ) -> FeedbackOut:
+    from datetime import datetime, timezone
+
+    from app.demo.memory_recs import memory_recs
+
+    if memory_recs.is_memory_id(recommendation_id):
+        rec = memory_recs.get(recommendation_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+        if body.decision not in {"accepted", "rejected"}:
+            raise HTTPException(status_code=400, detail="decision must be accepted or rejected")
+        if rec.status not in {"pending", "accepted"}:
+            raise HTTPException(
+                status_code=400, detail=f"Cannot {body.decision} in status={rec.status}"
+            )
+        now = datetime.now(timezone.utc)
+        memory_recs.set_status(
+            recommendation_id,
+            body.decision,
+            actor=body.operator,
+            comment=body.comment,
+            resolved_at=now if body.decision == "rejected" else None,
+        )
+        return FeedbackOut(
+            recommendation_id=recommendation_id,
+            decision=body.decision,
+            operator=body.operator,
+            comment=body.comment,
+            status=body.decision,
+            created_at=now,
+        )
     try:
         rec, fb = await submit_feedback(
             db,
@@ -259,6 +312,30 @@ async def approve(
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_action("operate")),
 ) -> SetpointAdviceOut:
+    from datetime import datetime, timezone
+
+    from app.demo.memory_recs import memory_recs
+
+    if memory_recs.is_memory_id(recommendation_id):
+        rec = memory_recs.get(recommendation_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+        if rec.status != "accepted":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Approve requires status=accepted (current={rec.status})",
+            )
+        memory_recs.set_status(
+            recommendation_id,
+            "approved",
+            actor=user.username,
+            comment=(body.comment if body else None),
+            approved_by=user.username,
+            approved_at=datetime.now(timezone.utc),
+        )
+        updated = memory_recs.get(recommendation_id)
+        assert updated is not None
+        return _row_to_advice(updated)
     try:
         rec = await approve_recommendation(
             db,
@@ -280,6 +357,41 @@ async def apply(
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_action("apply")),
 ) -> ApplyOut:
+    from datetime import datetime, timezone
+
+    from app.demo.memory_recs import memory_recs
+
+    if memory_recs.is_memory_id(recommendation_id):
+        rec = memory_recs.get(recommendation_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+        if rec.status != "approved":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Apply requires status=approved (current={rec.status})",
+            )
+        dry_run = True if body is None or body.dry_run is None else bool(body.dry_run)
+        planned = [{"field": k, "value": v} for k, v in json.loads(rec.proposed_json).items()]
+        memory_recs.set_status(
+            recommendation_id,
+            "applied",
+            actor=user.username,
+            apply_mode="dry_run" if dry_run else "write",
+            applied_by=user.username,
+            applied_at=datetime.now(timezone.utc),
+        )
+        return ApplyOut(
+            recommendation_id=recommendation_id,
+            status="applied",
+            apply_mode="dry_run" if dry_run else "write",
+            dry_run=dry_run,
+            planned=planned,
+            written=[] if dry_run else planned,
+            skipped=[],
+            detail="demo memory apply",
+            baseline_intensity=None,
+            baseline_efficiency=None,
+        )
     try:
         outcome = await apply_recommendation(
             db,
@@ -311,6 +423,35 @@ async def impact(
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_action("operate")),
 ) -> ImpactOut:
+    from app.demo.memory_recs import memory_recs
+    from app.services.live_reading import resolve_live_reading
+
+    if memory_recs.is_memory_id(recommendation_id):
+        rec = memory_recs.get(recommendation_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+        live = await resolve_live_reading(db, rec.plant_code)
+        est = float(rec.estimated_energy_saving_kwh_per_h or 0)
+        memory_recs.set_status(
+            recommendation_id,
+            rec.status,
+            actor=user.username,
+            realized_saving_kwh_per_h=est * 0.85,
+        )
+        return ImpactOut(
+            recommendation_id=recommendation_id,
+            plant_code=rec.plant_code,
+            status=rec.status,
+            baseline_intensity=rec.baseline_intensity,
+            current_intensity=live.energy_intensity_kgoe_ton,
+            baseline_efficiency=rec.baseline_efficiency,
+            current_efficiency=live.energy_efficiency_percent,
+            estimated_saving_kwh_per_h=est,
+            realized_saving_kwh_per_h=est * 0.85,
+            window_minutes=15,
+            samples=1,
+            detail="demo memory impact from live reading",
+        )
     try:
         out = await measure_impact(
             db, recommendation_id=recommendation_id, actor=user.username
@@ -340,6 +481,24 @@ async def audit(
     recommendation_id: int,
     db: AsyncSession = Depends(get_db),
 ) -> list[AuditEventOut]:
+    from app.demo.memory_recs import memory_recs
+
+    if memory_recs.is_memory_id(recommendation_id):
+        rec = memory_recs.get(recommendation_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Recommendation not found")
+        events = memory_recs.list_audit(recommendation_id)
+        return [
+            AuditEventOut(
+                id=e.id,
+                recommendation_id=e.recommendation_id,
+                event_type=e.event_type,
+                actor=e.actor,
+                detail=json.loads(e.detail_json or "{}"),
+                created_at=e.created_at,
+            )
+            for e in events
+        ]
     rec = await get_recommendation(db, recommendation_id)
     if rec is None:
         raise HTTPException(status_code=404, detail="Recommendation not found")

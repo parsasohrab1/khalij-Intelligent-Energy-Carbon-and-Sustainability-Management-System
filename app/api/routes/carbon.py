@@ -98,13 +98,9 @@ async def carbon_scopes(
     db: AsyncSession = Depends(get_db),
 ) -> CarbonScopeOut:
     if period_type == "instant":
-        latest = await sensor_repo.get_latest_reading(db, plant_code)
-        if latest is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No sensor readings for '{plant_code}'",
-            )
-        _, reading = latest
+        from app.services.live_reading import resolve_live_reading
+
+        reading = await resolve_live_reading(db, plant_code)
         scopes = compute_scopes(
             fuel_gas_flow_km3h=float(reading.fuel_gas_flow_km3h or 0),
             steam_flow_tonh=float(reading.steam_flow_tonh or 0),
@@ -124,9 +120,13 @@ async def carbon_scopes(
             factors_version=scopes.factors_version,
         )
 
-    reports = await list_reports(
-        db, plant_code=plant_code, period_type=period_type, limit=1  # type: ignore[arg-type]
-    )
+    reports = []
+    try:
+        reports = await list_reports(
+            db, plant_code=plant_code, period_type=period_type, limit=1  # type: ignore[arg-type]
+        )
+    except Exception:  # noqa: BLE001
+        reports = []
     if reports:
         report, code = reports[0]
         scope3 = float(getattr(report, "scope3_kgco2", None) or 0.0)
@@ -146,12 +146,62 @@ async def carbon_scopes(
             assurance_status=getattr(report, "assurance_status", None),
         )
 
+    if get_settings().allow_demo_memory():
+        from app.demo.memory_reports import generate_memory_report, memory_reports
+
+        mem = memory_reports.list(plant_code=plant_code, period_type=period_type, limit=1)
+        if not mem:
+            generated = await generate_memory_report(
+                plant_code, period_type, completed_only=False  # type: ignore[arg-type]
+            )
+            mem = [generated] if generated else []
+        if mem:
+            report = mem[0]
+            return CarbonScopeOut(
+                plant_code=report.plant_code,
+                period_type=period_type,  # type: ignore[arg-type]
+                scope1_kgco2=report.scope1_kgco2,
+                scope2_kgco2=report.scope2_kgco2,
+                scope3_kgco2=report.scope3_kgco2,
+                total_kgco2=report.scope1_kgco2 + report.scope2_kgco2 + report.scope3_kgco2,
+                carbon_intensity_kgco2_ton=report.carbon_intensity_kgco2_ton,
+                product_ton=report.product_ton,
+                factors_version=report.factors_version,
+                report_id=report.id,
+                period_start=report.period_start,
+                period_end=report.period_end,
+                assurance_status=report.assurance_status,
+            )
+
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=(
             f"No {period_type} report for '{plant_code}'. "
             "POST /api/v1/carbon/reports/generate first."
         ),
+    )
+
+
+def _memory_report_out(report) -> CarbonReportOut:
+    return CarbonReportOut(
+        id=report.id,
+        plant_code=report.plant_code,
+        period_type=report.period_type,  # type: ignore[arg-type]
+        period_start=report.period_start,
+        period_end=report.period_end,
+        scope1_kgco2=report.scope1_kgco2,
+        scope2_kgco2=report.scope2_kgco2,
+        scope3_kgco2=report.scope3_kgco2,
+        total_kgco2=report.scope1_kgco2 + report.scope2_kgco2 + float(report.scope3_kgco2 or 0),
+        carbon_intensity_kgco2_ton=report.carbon_intensity_kgco2_ton,
+        product_ton=report.product_ton,
+        sample_count=report.sample_count,
+        factors_version=report.factors_version,
+        assurance_status=report.assurance_status or "draft",
+        submitted_by=report.submitted_by,
+        approved_by=report.approved_by,
+        locked_by=report.locked_by,
+        created_at=report.created_at,
     )
 
 
@@ -169,21 +219,37 @@ async def generate_report(
     generated = []
     for plant_code in body.plant_codes:
         for period in body.period_types:
-            result = await generate_and_persist_report(
-                db,
-                plant_code,
-                period,
-                completed_only=body.completed_only,
-                export_dir=export_dir,
-            )
-            if result is None:
+            result = None
+            try:
+                result = await generate_and_persist_report(
+                    db,
+                    plant_code,
+                    period,
+                    completed_only=body.completed_only,
+                    export_dir=export_dir,
+                )
+            except Exception:  # noqa: BLE001
+                result = None
+            if result is not None:
+                generated.append(_report_out(result.report, result.plant_code))
                 continue
-            generated.append(_report_out(result.report, result.plant_code))
+            if settings.allow_demo_memory():
+                from app.demo.memory_reports import generate_memory_report
+
+                mem = await generate_memory_report(
+                    plant_code, period, completed_only=body.completed_only
+                )
+                if mem is not None:
+                    generated.append(_memory_report_out(mem))
 
     return GenerateReportResponse(
         generated=len(generated),
         reports=generated,
-        message="Reports generated and persisted to carbon_reports",
+        message=(
+            "Reports generated and persisted to carbon_reports"
+            if generated
+            else "No reports generated — check live stream / sensor history"
+        ),
     )
 
 
@@ -194,10 +260,28 @@ async def get_reports(
     limit: int = Query(default=50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ) -> list[CarbonReportOut]:
-    rows = await list_reports(
-        db, plant_code=plant_code, period_type=period_type, limit=limit
-    )
-    return [_report_out(report, code) for report, code in rows]
+    out: list[CarbonReportOut] = []
+    try:
+        rows = await list_reports(
+            db, plant_code=plant_code, period_type=period_type, limit=limit
+        )
+        out.extend(_report_out(report, code) for report, code in rows)
+    except Exception:  # noqa: BLE001
+        out = []
+
+    if not out and get_settings().allow_demo_memory():
+        from app.demo.memory_reports import generate_memory_report, memory_reports
+
+        mem_rows = memory_reports.list(
+            plant_code=plant_code, period_type=period_type, limit=limit
+        )
+        if not mem_rows and plant_code:
+            generated = await generate_memory_report(
+                plant_code, period_type or "daily", completed_only=False
+            )
+            mem_rows = [generated] if generated else []
+        out.extend(_memory_report_out(r) for r in mem_rows)
+    return out
 
 
 @router.get("/reports/{report_id}/download")
@@ -261,11 +345,19 @@ async def download_esg_pack(
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """E10 — ESG-presentable pack (HTML/CSV), not raw JSON."""
-    found = await get_report(db, report_id)
-    if found is None:
-        raise HTTPException(status_code=404, detail="Report not found")
-    report, plant_code = found
-    pack = build_esg_pack(report, plant_code)
+    from app.demo.memory_reports import memory_reports
+
+    if memory_reports.is_memory_id(report_id):
+        mem = memory_reports.get(report_id)
+        if mem is None:
+            raise HTTPException(status_code=404, detail="Report not found")
+        pack = build_esg_pack(mem, mem.plant_code)  # type: ignore[arg-type]
+    else:
+        found = await get_report(db, report_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail="Report not found")
+        report, plant_code = found
+        pack = build_esg_pack(report, plant_code)
     if format == "csv":
         return PlainTextResponse(
             content=pack.csv_text,
@@ -289,6 +381,14 @@ async def submit_assurance(
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_action("operate")),
 ) -> CarbonReportOut:
+    from app.demo.memory_reports import memory_reports
+
+    if memory_reports.is_memory_id(report_id):
+        try:
+            report = memory_reports.set_assurance(report_id, "submitted", actor=user.username)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Report not found") from None
+        return _memory_report_out(report)
     try:
         report = await submit_report(
             db,
@@ -312,6 +412,14 @@ async def approve_assurance(
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_action("operate")),
 ) -> CarbonReportOut:
+    from app.demo.memory_reports import memory_reports
+
+    if memory_reports.is_memory_id(report_id):
+        try:
+            report = memory_reports.set_assurance(report_id, "approved", actor=user.username)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Report not found") from None
+        return _memory_report_out(report)
     try:
         report = await approve_report(
             db,
@@ -335,6 +443,14 @@ async def lock_assurance(
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_action("settings")),
 ) -> CarbonReportOut:
+    from app.demo.memory_reports import memory_reports
+
+    if memory_reports.is_memory_id(report_id):
+        try:
+            report = memory_reports.set_assurance(report_id, "locked", actor=user.username)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Report not found") from None
+        return _memory_report_out(report)
     try:
         report = await lock_report(
             db,

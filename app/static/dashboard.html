@@ -179,22 +179,34 @@
 
         <section class="view" id="view-optimize">
           <div class="section-bar">Control · Optimization · E9 Action</div>
+          <div class="kpis kpis-compact" id="optKpis">
+            <div class="kpi"><div class="lbl">Power</div><div class="num"><span id="optPower">—</span><span class="unit">MW</span></div></div>
+            <div class="kpi"><div class="lbl">Efficiency</div><div class="num"><span id="optEff">—</span><span class="unit">%</span></div></div>
+            <div class="kpi"><div class="lbl">Est. saving</div><div class="num"><span id="optSave">—</span><span class="unit">kWh/h</span></div></div>
+            <div class="kpi"><div class="lbl">Advice</div><div class="num"><span id="optCount">—</span></div></div>
+          </div>
           <div class="card" data-require="operate">
             <div class="row">
               <button class="btn btn-primary" type="button" id="btnAnalyze" data-require="operate">Analyze savings</button>
               <button class="btn" type="button" id="btnRecs" data-require="operate">List recommendations</button>
             </div>
-            <p class="muted" style="margin:8px 0 4px;font-size:12px">Flow: accept → approve → apply (admin, dry-run default) → impact</p>
-            <pre class="out" id="optOut">API response…</pre>
+            <p class="muted" style="margin:8px 0 4px;font-size:12px">Auto-refreshes from live stream · Flow: accept → approve → apply (admin, dry-run default) → impact</p>
+            <pre class="out" id="optOut">Loading live optimization…</pre>
             <table>
               <thead><tr><th>ID</th><th>Status</th><th>Title</th><th>Current → Proposed</th><th>Saving</th><th>Action</th></tr></thead>
-              <tbody id="recsBody"><tr><td colspan="6">—</td></tr></tbody>
+              <tbody id="recsBody"><tr><td colspan="6">Loading…</td></tr></tbody>
             </table>
           </div>
         </section>
 
         <section class="view" id="view-carbon">
           <div class="section-bar">Reporting · Carbon · E10 ESG</div>
+          <div class="kpis kpis-compact" id="carbonKpis">
+            <div class="kpi"><div class="lbl">Scope 1</div><div class="num"><span id="cS1">—</span><span class="unit">kg</span></div></div>
+            <div class="kpi"><div class="lbl">Scope 2</div><div class="num"><span id="cS2">—</span><span class="unit">kg</span></div></div>
+            <div class="kpi"><div class="lbl">Intensity</div><div class="num"><span id="cInt">—</span><span class="unit">kg/t</span></div></div>
+            <div class="kpi"><div class="lbl">Reports</div><div class="num"><span id="cRep">—</span></div></div>
+          </div>
           <div class="card">
             <div class="row mb">
               <button class="btn btn-primary" type="button" id="btnScopes" data-require="read">Live scopes</button>
@@ -203,17 +215,30 @@
               <button class="btn" type="button" id="btnMarket" data-require="operate">Market sync</button>
               <button class="btn" type="button" id="btnMarketHist" data-require="read">Sync history</button>
             </div>
-            <p class="muted" style="margin:0 0 8px;font-size:12px">Assurance: submit → approve → lock (admin) · ESG pack = HTML/CSV for audit (not raw JSON)</p>
-            <pre class="out" id="carbonOut">API response…</pre>
+            <p class="muted" style="margin:0 0 8px;font-size:12px">Auto-refreshes from live stream · Assurance: submit → approve → lock (admin) · ESG pack = HTML/CSV</p>
+            <pre class="out" id="carbonOut">Loading live carbon scopes…</pre>
             <table>
               <thead><tr><th>ID</th><th>Plant</th><th>Period</th><th>S1</th><th>S2</th><th>S3</th><th>Status</th><th>Actions</th></tr></thead>
-              <tbody id="reportsBody"><tr><td colspan="8">List reports to populate</td></tr></tbody>
+              <tbody id="reportsBody"><tr><td colspan="8">Loading…</td></tr></tbody>
             </table>
           </div>
         </section>
 
         <section class="view" id="view-auth">
-          <div class="section-bar">Connection · Auth</div>
+          <div class="section-bar">Connection · Plant &amp; Auth</div>
+          <div class="card mb" id="connectPanel">
+            <div class="row mb">
+              <strong>Live plant connection</strong>
+              <button type="button" class="btn btn-sm" id="btnConnectRefresh">Refresh status</button>
+            </div>
+            <div class="kpis kpis-compact">
+              <div class="kpi"><div class="lbl">Mode</div><div class="num plant-name"><span id="connMode">—</span></div></div>
+              <div class="kpi"><div class="lbl">Feeder</div><div class="num"><span id="connFeeder">—</span></div></div>
+              <div class="kpi"><div class="lbl">OPC</div><div class="num"><span id="connOpc">—</span></div></div>
+              <div class="kpi"><div class="lbl">Stream</div><div class="num"><span id="connStream">—</span></div></div>
+            </div>
+            <pre class="out" id="connectOut">Loading connection status…</pre>
+          </div>
           <div class="card">
             <div class="form-grid">
               <label>User<input id="user" value="operator" /></label>

@@ -271,6 +271,9 @@ button { cursor: pointer; }
   gap: 0.55rem;
   margin-bottom: 0.75rem;
 }
+.kpis-compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
 .kpi {
   background: #111;
   border: 1px solid #2c2c2c;

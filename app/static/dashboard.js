@@ -391,6 +391,9 @@ function setActiveView(view) {
   clearMsg();
   if (view === "live") requestAnimationFrame(redrawCharts);
   if (view === "notifications") loadNotifications();
+  if (view === "optimize") loadControlLive();
+  if (view === "carbon") loadReportingLive();
+  if (view === "auth") loadConnectionLive();
 }
 
 document.querySelectorAll(".nav button").forEach((btn) => {
@@ -663,15 +666,8 @@ async function renderRecs(list) {
 
 document.getElementById("btnAnalyze").onclick = async () => {
   try {
-    const out = await api("/optimization/analyze", {
-      method: "POST",
-      body: JSON.stringify({
-        plant_codes: [plantEl.value, plantEl.value === "olefin" ? "pta" : "olefin"],
-        simulate: true, persist: true,
-      }),
-    });
-    optOut.textContent = JSON.stringify(out, null, 2);
-    await renderRecs(out.advice || []);
+    await runAnalyze();
+    showOk("analyze ok");
   } catch (e) { showError(e.message); }
 };
 document.getElementById("btnRecs").onclick = async () => {
@@ -679,11 +675,112 @@ document.getElementById("btnRecs").onclick = async () => {
     const rows = await api(`/optimization/recommendations?plant_code=${encodeURIComponent(plantEl.value)}`);
     optOut.textContent = JSON.stringify(rows, null, 2);
     await renderRecs(rows);
+    const saveEl = document.getElementById("optSave");
+    const countEl = document.getElementById("optCount");
+    if (countEl) countEl.textContent = String(rows.length);
+    if (saveEl) {
+      saveEl.textContent = fmt(rows.reduce((s, r) => s + Number(r.estimated_energy_saving_kwh_per_h || 0), 0));
+    }
   } catch (e) { showError(e.message); }
 };
 
+async function runAnalyze() {
+  const out = await api("/optimization/analyze", {
+    method: "POST",
+    body: JSON.stringify({
+      plant_codes: [plantEl.value, plantEl.value === "olefin" ? "pta" : "olefin"],
+      simulate: true, persist: true,
+    }),
+  });
+  optOut.textContent = JSON.stringify(out, null, 2);
+  await renderRecs(out.advice || []);
+  const saveEl = document.getElementById("optSave");
+  const countEl = document.getElementById("optCount");
+  if (saveEl) saveEl.textContent = fmt(out.total_estimated_saving_kwh_per_h);
+  if (countEl) countEl.textContent = String((out.advice || []).length);
+  try {
+    const live = await api(`/dashboard/energy?plant_code=${encodeURIComponent(plantEl.value)}`);
+    const p = document.getElementById("optPower");
+    const e = document.getElementById("optEff");
+    if (p) p.textContent = fmt(live.electricity_power_mw);
+    if (e) e.textContent = fmt(live.energy_efficiency_percent);
+  } catch { /* ignore */ }
+  return out;
+}
+
+async function loadControlLive() {
+  try {
+    await runAnalyze();
+  } catch (e) {
+    optOut.textContent = "Control live load failed: " + e.message;
+    showError(e.message);
+  }
+}
+
+async function loadReportingLive() {
+  try {
+    const scopes = await api(`/carbon/scopes?plant_code=${encodeURIComponent(plantEl.value)}`);
+    carbonOut.textContent = JSON.stringify(scopes, null, 2);
+    const s1 = document.getElementById("cS1");
+    const s2 = document.getElementById("cS2");
+    const cint = document.getElementById("cInt");
+    if (s1) s1.textContent = fmt(scopes.scope1_kgco2, 1);
+    if (s2) s2.textContent = fmt(scopes.scope2_kgco2, 1);
+    if (cint) cint.textContent = fmt(scopes.carbon_intensity_kgco2_ton, 2);
+    let listed = await api(`/carbon/reports?plant_code=${encodeURIComponent(plantEl.value)}`);
+    if (!listed.length) {
+      await api("/carbon/reports/generate", {
+        method: "POST",
+        body: JSON.stringify({ plant_codes: [plantEl.value], period_types: ["daily"], completed_only: false }),
+      });
+      listed = await api(`/carbon/reports?plant_code=${encodeURIComponent(plantEl.value)}`);
+    }
+    const crep = document.getElementById("cRep");
+    if (crep) crep.textContent = String(listed.length);
+    renderReportsTable(listed);
+  } catch (e) {
+    carbonOut.textContent = "Reporting live load failed: " + e.message;
+    showError(e.message);
+  }
+}
+
+async function loadConnectionLive() {
+  const out = document.getElementById("connectOut");
+  try {
+    const status = await api("/ingestion/plant-connect/status");
+    const me = token() ? await api("/auth/me").catch(() => null) : null;
+    const health = await fetch("/health").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    const payload = { connection: status, me, health };
+    if (out) out.textContent = JSON.stringify(payload, null, 2);
+    const mode = document.getElementById("connMode");
+    const feeder = document.getElementById("connFeeder");
+    const opc = document.getElementById("connOpc");
+    const stream = document.getElementById("connStream");
+    if (mode) mode.textContent = status.plant_connect ? "Plant Connect" : "Demo / sim";
+    if (feeder) feeder.textContent = status.demo_feeder ? "ON" : "off";
+    if (opc) opc.textContent = status.opc_session_connected ? "up" : "idle";
+    const live0 = (status.live && status.live[0]) || null;
+    if (stream) stream.textContent = live0 ? (live0.stream || live0.source || "ok") : "—";
+    if (me && document.getElementById("authOut")) {
+      authOut.textContent = JSON.stringify(me, null, 2);
+    }
+  } catch (e) {
+    if (out) out.textContent = "Connection load failed: " + e.message;
+    showError(e.message);
+  }
+}
+
 document.getElementById("btnScopes").onclick = async () => {
-  try { carbonOut.textContent = JSON.stringify(await api(`/carbon/scopes?plant_code=${encodeURIComponent(plantEl.value)}`), null, 2); }
+  try {
+    const scopes = await api(`/carbon/scopes?plant_code=${encodeURIComponent(plantEl.value)}`);
+    carbonOut.textContent = JSON.stringify(scopes, null, 2);
+    const s1 = document.getElementById("cS1");
+    const s2 = document.getElementById("cS2");
+    const cint = document.getElementById("cInt");
+    if (s1) s1.textContent = fmt(scopes.scope1_kgco2, 1);
+    if (s2) s2.textContent = fmt(scopes.scope2_kgco2, 1);
+    if (cint) cint.textContent = fmt(scopes.carbon_intensity_kgco2_ton, 2);
+  }
   catch (e) { showError(e.message); }
 };
 document.getElementById("btnGenReport").onclick = async () => {
@@ -695,6 +792,8 @@ document.getElementById("btnGenReport").onclick = async () => {
     carbonOut.textContent = JSON.stringify(out, null, 2);
     showOk("report generated");
     const listed = await api(`/carbon/reports?plant_code=${encodeURIComponent(plantEl.value)}`);
+    const crep = document.getElementById("cRep");
+    if (crep) crep.textContent = String(listed.length);
     renderReportsTable(listed);
   } catch (e) { showError(e.message); }
 };
@@ -702,6 +801,8 @@ document.getElementById("btnListReports").onclick = async () => {
   try {
     const rows = await api(`/carbon/reports?plant_code=${encodeURIComponent(plantEl.value)}`);
     carbonOut.textContent = JSON.stringify(rows, null, 2);
+    const crep = document.getElementById("cRep");
+    if (crep) crep.textContent = String(rows.length);
     renderReportsTable(rows);
   } catch (e) { showError(e.message); }
 };
@@ -713,6 +814,8 @@ document.getElementById("btnMarketHist").onclick = async () => {
   try { carbonOut.textContent = JSON.stringify(await api(`/carbon/market/syncs?plant_code=${encodeURIComponent(plantEl.value)}`), null, 2); }
   catch (e) { showError(e.message); }
 };
+
+document.getElementById("btnConnectRefresh")?.addEventListener("click", () => loadConnectionLive());
 
 async function refreshMe() {
   if (!token()) {

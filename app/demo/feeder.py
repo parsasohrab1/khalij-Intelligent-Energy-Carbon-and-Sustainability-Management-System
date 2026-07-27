@@ -44,7 +44,17 @@ class DemoFeeder:
             async with self._session_factory() as session:
                 await sensor_repo.upsert_reading(session, payload)
         except Exception:
-            logger.exception("Demo feeder DB persist failed for %s", payload.get("plant_code"))
+            logger.warning(
+                "Demo feeder DB persist disabled after failure for %s",
+                payload.get("plant_code"),
+            )
+            self._session_factory = None
+            if self._engine is not None:
+                try:
+                    await self._engine.dispose()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._engine = None
 
     async def tick(self) -> list[dict[str, Any]]:
         published: list[dict[str, Any]] = []

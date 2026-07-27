@@ -46,19 +46,49 @@ async def opcua_snapshot(plant_code: str = "olefin") -> dict:
 
 @router.get("/plant-connect/status")
 async def plant_connect_status() -> dict:
+    from datetime import datetime, timezone
+
     from app.core.config import get_settings
+    from app.demo.memory_store import memory_store
     from app.ingestion.opcua_session import get_plant_session
+    from app.services.live_reading import resolve_live_reading
 
     cfg = get_settings()
     session = get_plant_session(cfg)
+    plants_live = []
+    for code in cfg.producer_plant_code_list or ["olefin"]:
+        mem = memory_store.latest(code)
+        age = None
+        if mem is not None:
+            age = max(0.0, (datetime.now(timezone.utc) - mem.time).total_seconds())
+        try:
+            live = await resolve_live_reading(None, code)
+            plants_live.append(
+                {
+                    "plant_code": code,
+                    "source": live.source,
+                    "quality": live.quality,
+                    "as_of": live.time.isoformat(),
+                    "age_seconds": age,
+                    "electricity_power_mw": live.electricity_power_mw,
+                    "fuel_gas_flow_km3h": live.fuel_gas_flow_km3h,
+                    "steam_flow_tonh": live.steam_flow_tonh,
+                    "stream": "ok" if age is not None and age <= cfg.stale_data_seconds else ("stale" if age is not None else "live"),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            plants_live.append({"plant_code": code, "error": str(exc)})
+
     return {
         "plant_connect": cfg.plant_connect,
         "ingestion_source": cfg.ingestion_source,
         "opc_ua_endpoint": cfg.opc_ua_endpoint or None,
         "opc_ua_use_subscription": cfg.opc_ua_use_subscription,
         "demo_memory_allowed": cfg.allow_demo_memory(),
+        "demo_feeder": cfg.should_run_demo_feeder(),
         "opc_session_connected": session.connected,
         "plants": cfg.producer_plant_code_list,
+        "live": plants_live,
     }
 
 
