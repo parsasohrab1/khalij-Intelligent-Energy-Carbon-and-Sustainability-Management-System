@@ -3,17 +3,30 @@
 
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
+CREATE TABLE IF NOT EXISTS sites (
+    id          SERIAL PRIMARY KEY,
+    code        TEXT NOT NULL UNIQUE,
+    name        TEXT NOT NULL,
+    region      TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO sites (code, name, region) VALUES
+    ('khalij', 'Khalij Complex', 'gulf')
+ON CONFLICT (code) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS plants (
     id          SERIAL PRIMARY KEY,
     code        TEXT NOT NULL UNIQUE,
     name        TEXT NOT NULL,
     unit_type   TEXT NOT NULL CHECK (unit_type IN ('olefin', 'pta', 'other')),
+    site_id     INTEGER REFERENCES sites(id),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-INSERT INTO plants (code, name, unit_type) VALUES
-    ('olefin', 'Olefin Unit', 'olefin'),
-    ('pta', 'PTA Unit', 'pta')
+INSERT INTO plants (code, name, unit_type, site_id) VALUES
+    ('olefin', 'Olefin Unit', 'olefin', (SELECT id FROM sites WHERE code = 'khalij')),
+    ('pta', 'PTA Unit', 'pta', (SELECT id FROM sites WHERE code = 'khalij'))
 ON CONFLICT (code) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS sensor_readings (
@@ -27,7 +40,10 @@ CREATE TABLE IF NOT EXISTS sensor_readings (
     pressure_bar              DOUBLE PRECISION,
     energy_intensity_kgoe_ton DOUBLE PRECISION,
     carbon_emission_kgco2_ton DOUBLE PRECISION,
-    energy_efficiency_percent DOUBLE PRECISION
+    energy_efficiency_percent DOUBLE PRECISION,
+    source                    TEXT,
+    quality                   TEXT,
+    quality_detail            TEXT
 );
 
 SELECT create_hypertable('sensor_readings', 'time', if_not_exists => TRUE);
@@ -43,9 +59,30 @@ CREATE TABLE IF NOT EXISTS carbon_reports (
     period_type                TEXT NOT NULL CHECK (period_type IN ('daily', 'monthly', 'yearly')),
     scope1_kgco2               DOUBLE PRECISION NOT NULL DEFAULT 0,
     scope2_kgco2               DOUBLE PRECISION NOT NULL DEFAULT 0,
+    scope3_kgco2               DOUBLE PRECISION,
+    scope3_detail_json         TEXT,
     carbon_intensity_kgco2_ton DOUBLE PRECISION,
+    product_ton                DOUBLE PRECISION,
+    sample_count               INTEGER,
+    factors_version            TEXT,
+    assurance_status           VARCHAR(32) NOT NULL DEFAULT 'draft',
+    submitted_by               TEXT,
+    submitted_at               TIMESTAMPTZ,
+    approved_by                TEXT,
+    approved_at                TIMESTAMPTZ,
+    locked_by                  TEXT,
+    locked_at                  TIMESTAMPTZ,
     created_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (plant_id, period_start, period_type)
+);
+
+CREATE TABLE IF NOT EXISTS carbon_report_assurance_events (
+    id                  SERIAL PRIMARY KEY,
+    report_id           INTEGER NOT NULL REFERENCES carbon_reports(id),
+    event_type          TEXT NOT NULL,
+    actor               TEXT NOT NULL,
+    detail_json         TEXT NOT NULL DEFAULT '{}',
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS model_predictions (
@@ -97,10 +134,11 @@ CREATE TABLE IF NOT EXISTS carbon_market_syncs (
     message         TEXT NOT NULL,
     reports_synced  INTEGER NOT NULL DEFAULT 0,
     payload_path    TEXT,
+    external_ref    TEXT,
     synced_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Phase 4: optimization recommendations + operator feedback
+-- Phase 4 / E9: optimization recommendations + operator feedback + action
 CREATE TABLE IF NOT EXISTS optimization_recommendations (
     id                              SERIAL PRIMARY KEY,
     plant_code                      TEXT NOT NULL,
@@ -118,6 +156,14 @@ CREATE TABLE IF NOT EXISTS optimization_recommendations (
     simulated_intensity_delta       DOUBLE PRECISION,
     simulated_efficiency_delta_pp   DOUBLE PRECISION,
     status                          TEXT NOT NULL DEFAULT 'pending',
+    approved_by                     TEXT,
+    approved_at                     TIMESTAMPTZ,
+    applied_by                      TEXT,
+    applied_at                      TIMESTAMPTZ,
+    apply_mode                      VARCHAR(16),
+    baseline_intensity              DOUBLE PRECISION,
+    baseline_efficiency             DOUBLE PRECISION,
+    realized_saving_kwh_per_h       DOUBLE PRECISION,
     created_at                      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     resolved_at                     TIMESTAMPTZ
 );
@@ -133,3 +179,15 @@ CREATE TABLE IF NOT EXISTS recommendation_feedback (
     comment             TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS recommendation_audit_events (
+    id                  SERIAL PRIMARY KEY,
+    recommendation_id   INTEGER NOT NULL REFERENCES optimization_recommendations(id),
+    event_type          TEXT NOT NULL,
+    actor               TEXT NOT NULL,
+    detail_json         TEXT NOT NULL DEFAULT '{}',
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rec_audit_rec_time
+    ON recommendation_audit_events (recommendation_id, created_at DESC);

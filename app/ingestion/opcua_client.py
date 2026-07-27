@@ -1,4 +1,4 @@
-"""OPC-UA reader with process simulator fallback (R-GEN-01, FR-DATA-01/02)."""
+"""OPC-UA reader with process simulator fallback (R-GEN-01, FR-DATA-01/02, E6)."""
 
 from __future__ import annotations
 
@@ -9,12 +9,16 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.core.config import Settings, get_settings
+from app.ingestion.quality import (
+    QualityCode,
+    apply_scale,
+    reading_quality_payload,
+)
 from app.ingestion.tag_map import SENSOR_FIELDS, get_tag_map
 from app.services.physics import enrich_reading
 
 logger = logging.getLogger(__name__)
 
-# Nominal baselines per plant for the 1 Hz simulator
 _SIM_BASE: dict[str, dict[str, float]] = {
     "olefin": {
         "electricity_power_mw": 15.0,
@@ -73,63 +77,135 @@ def simulate_plant_reading(plant_code: str, elapsed_s: float | None = None) -> d
         reactor_temp_c=raw["reactor_temp_c"],
     )
     now = datetime.now(timezone.utc)
+    per_tag = {f: QualityCode.GOOD for f in SENSOR_FIELDS}
+    q = reading_quality_payload(per_tag, allow_uncertain=True)
     return {
         "time": now.isoformat(),
         "plant_code": plant_code,
         "source": "simulator",
         **{k: round(v, 3) for k, v in raw.items()},
         **derived,
+        **q,
     }
 
 
 async def read_opcua_plant(
     plant_code: str,
     settings: Settings | None = None,
+    *,
+    use_session: bool = True,
 ) -> dict[str, Any]:
     """
-    Read mapped OPC-UA tags for a plant.
-    Falls back to simulator when endpoint is empty or source=simulator.
+    Read mapped OPC-UA tags for a plant with quality codes.
+    Falls back to simulator unless plant_connect is enabled.
     """
     cfg = settings or get_settings()
     tag_map = get_tag_map()
     if plant_code not in tag_map:
         raise KeyError(f"Unknown plant_code '{plant_code}' in tag map")
 
-    if cfg.ingestion_source == "simulator" or not cfg.opc_ua_endpoint:
+    plant_mode = cfg.plant_connect or cfg.ingestion_source == "opcua"
+    if not plant_mode or not cfg.opc_ua_endpoint:
+        if cfg.plant_connect and not cfg.opc_ua_endpoint:
+            raise RuntimeError(
+                "PLANT_CONNECT=true requires OPC_UA_ENDPOINT (simulator fallback disabled)"
+            )
         return simulate_plant_reading(plant_code)
-
-    try:
-        from asyncua import Client
-    except ImportError as exc:
-        raise RuntimeError(
-            "OPC-UA mode requires asyncua. Install with: pip install 'iems[opcua]'"
-        ) from exc
 
     plant = tag_map[plant_code]
     values: dict[str, float] = {}
-    async with Client(url=cfg.opc_ua_endpoint) as client:
+    per_tag: dict[str, QualityCode] = {}
+    server_times: list[datetime] = []
+
+    if use_session:
+        from app.ingestion.opcua_session import get_plant_session
+
+        session = get_plant_session(cfg)
+        samples = await session.read_plant(plant)
         for field in SENSOR_FIELDS:
             tag = plant.tags.get(field)
             if tag is None:
                 continue
-            node = client.get_node(tag.node_id)
-            values[field] = float(await node.read_value())
+            sample = samples.get(field)
+            if sample is None:
+                per_tag[field] = QualityCode.BAD
+                continue
+            per_tag[field] = sample.quality
+            if sample.value is None:
+                continue
+            values[field] = apply_scale(sample.value, scale=tag.scale, offset=tag.offset)
+            if sample.server_timestamp is not None:
+                server_times.append(sample.server_timestamp)
+    else:
+        # One-shot poll (tests / diagnostics)
+        try:
+            from asyncua import Client
+        except ImportError as exc:
+            raise RuntimeError(
+                "OPC-UA mode requires asyncua. Install with: pip install 'iems[opcua]'"
+            ) from exc
+
+        client = Client(url=cfg.opc_ua_endpoint)
+        if cfg.opc_ua_username:
+            client.set_user(cfg.opc_ua_username)
+            client.set_password(cfg.opc_ua_password or "")
+        async with client:
+            for field in SENSOR_FIELDS:
+                tag = plant.tags.get(field)
+                if tag is None:
+                    continue
+                node = client.get_node(tag.node_id)
+                try:
+                    dv = await node.read_data_value()
+                    from app.ingestion.quality import status_code_to_quality
+
+                    status = int(dv.StatusCode.value) if dv.StatusCode is not None else None
+                    quality = status_code_to_quality(status)
+                    raw_val = float(dv.Value.Value)
+                    values[field] = apply_scale(raw_val, scale=tag.scale, offset=tag.offset)
+                    per_tag[field] = quality
+                except Exception:  # noqa: BLE001
+                    logger.exception("OPC one-shot read failed for %s.%s", plant_code, field)
+                    per_tag[field] = QualityCode.BAD
 
     missing = [f for f in SENSOR_FIELDS if f not in values]
-    if missing:
+    if missing and cfg.plant_connect:
+        # Still emit partial reading with Bad quality so alerts can fire
+        logger.warning("OPC-UA incomplete tags for %s: %s", plant_code, missing)
+        for f in missing:
+            per_tag.setdefault(f, QualityCode.BAD)
+    elif missing:
         raise RuntimeError(f"OPC-UA missing tags for {plant_code}: {missing}")
 
-    derived = enrich_reading(
-        electricity_power_mw=values["electricity_power_mw"],
-        fuel_gas_flow_km3h=values["fuel_gas_flow_km3h"],
-        steam_flow_tonh=values["steam_flow_tonh"],
-        feed_flow_tonh=values["feed_flow_tonh"],
-        reactor_temp_c=values["reactor_temp_c"],
-    )
+    # Fill missing numeric fields with None-safe zeros only when not plant_connect fail-hard
+    for f in SENSOR_FIELDS:
+        if f not in values:
+            values[f] = float("nan")
+
+    # Replace NaN with None for JSON / DB
+    clean = {k: (None if isinstance(v, float) and math.isnan(v) else round(v, 3)) for k, v in values.items()}
+
+    # Derived KPIs need complete numbers — skip if incomplete
+    derived: dict[str, Any] = {}
+    if all(clean.get(f) is not None for f in (
+        "electricity_power_mw", "fuel_gas_flow_km3h", "steam_flow_tonh",
+        "feed_flow_tonh", "reactor_temp_c",
+    )):
+        derived = enrich_reading(
+            electricity_power_mw=float(clean["electricity_power_mw"]),
+            fuel_gas_flow_km3h=float(clean["fuel_gas_flow_km3h"]),
+            steam_flow_tonh=float(clean["steam_flow_tonh"]),
+            feed_flow_tonh=float(clean["feed_flow_tonh"]),
+            reactor_temp_c=float(clean["reactor_temp_c"]),
+        )
+
+    q = reading_quality_payload(per_tag, allow_uncertain=cfg.opc_ua_allow_uncertain)
+    as_of = max(server_times) if server_times else datetime.now(timezone.utc)
     return {
-        "time": datetime.now(timezone.utc).isoformat(),
+        "time": as_of.isoformat(),
         "plant_code": plant_code,
         "source": "opcua",
-        **{k: round(v, 3) for k, v in values.items()},
+        **clean,
         **derived,
+        **q,
     }

@@ -1,0 +1,14 @@
+# Overlay scrape for HA api-b — use with:
+#   - ./infra/monitoring/prometheus.ha.yml mounted or merged into rule scrape_configs
+scrape_configs:
+  - job_name: iems-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          service: iems-api
+          instance_role: primary
+      - targets: ["api-b:8000"]
+        labels:
+          service: iems-api
+          instance_role: secondary

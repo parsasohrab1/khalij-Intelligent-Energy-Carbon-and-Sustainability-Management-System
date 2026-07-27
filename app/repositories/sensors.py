@@ -1,7 +1,8 @@
-"""Persist and query sensor readings in TimescaleDB (R-GEN-02)."""
+"""Persist and query sensor readings in TimescaleDB (R-GEN-02, E6)."""
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -16,6 +17,30 @@ async def get_plant_id(session: AsyncSession, plant_code: str) -> int | None:
     return result.scalar_one_or_none()
 
 
+def _quality_detail_str(payload: dict[str, Any]) -> str | None:
+    detail = payload.get("quality_detail")
+    if detail is None:
+        return None
+    if isinstance(detail, str):
+        return detail
+    return json.dumps(detail)
+
+
+def _apply_fields(row: SensorReading, payload: dict[str, Any]) -> None:
+    row.electricity_power_mw = payload.get("electricity_power_mw")
+    row.fuel_gas_flow_km3h = payload.get("fuel_gas_flow_km3h")
+    row.steam_flow_tonh = payload.get("steam_flow_tonh")
+    row.feed_flow_tonh = payload.get("feed_flow_tonh")
+    row.reactor_temp_c = payload.get("reactor_temp_c")
+    row.pressure_bar = payload.get("pressure_bar")
+    row.energy_intensity_kgoe_ton = payload.get("energy_intensity_kgoe_ton")
+    row.carbon_emission_kgco2_ton = payload.get("carbon_emission_kgco2_ton")
+    row.energy_efficiency_percent = payload.get("energy_efficiency_percent")
+    row.source = payload.get("source")
+    row.quality = payload.get("quality")
+    row.quality_detail = _quality_detail_str(payload)
+
+
 async def upsert_reading(session: AsyncSession, payload: dict[str, Any]) -> SensorReading:
     plant_code = payload["plant_code"]
     plant_id = await get_plant_id(session, plant_code)
@@ -26,19 +51,8 @@ async def upsert_reading(session: AsyncSession, payload: dict[str, Any]) -> Sens
     if isinstance(ts, str):
         ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
-    reading = SensorReading(
-        time=ts,
-        plant_id=plant_id,
-        electricity_power_mw=payload.get("electricity_power_mw"),
-        fuel_gas_flow_km3h=payload.get("fuel_gas_flow_km3h"),
-        steam_flow_tonh=payload.get("steam_flow_tonh"),
-        feed_flow_tonh=payload.get("feed_flow_tonh"),
-        reactor_temp_c=payload.get("reactor_temp_c"),
-        pressure_bar=payload.get("pressure_bar"),
-        energy_intensity_kgoe_ton=payload.get("energy_intensity_kgoe_ton"),
-        carbon_emission_kgco2_ton=payload.get("carbon_emission_kgco2_ton"),
-        energy_efficiency_percent=payload.get("energy_efficiency_percent"),
-    )
+    reading = SensorReading(time=ts, plant_id=plant_id)
+    _apply_fields(reading, payload)
     session.add(reading)
     try:
         await session.commit()
@@ -46,7 +60,6 @@ async def upsert_reading(session: AsyncSession, payload: dict[str, Any]) -> Sens
         return reading
     except Exception:
         await session.rollback()
-        # Duplicate second-bucket: update existing row
         existing = await session.execute(
             select(SensorReading).where(
                 SensorReading.time == ts, SensorReading.plant_id == plant_id
@@ -55,15 +68,7 @@ async def upsert_reading(session: AsyncSession, payload: dict[str, Any]) -> Sens
         row = existing.scalar_one_or_none()
         if row is None:
             raise
-        row.electricity_power_mw = payload.get("electricity_power_mw")
-        row.fuel_gas_flow_km3h = payload.get("fuel_gas_flow_km3h")
-        row.steam_flow_tonh = payload.get("steam_flow_tonh")
-        row.feed_flow_tonh = payload.get("feed_flow_tonh")
-        row.reactor_temp_c = payload.get("reactor_temp_c")
-        row.pressure_bar = payload.get("pressure_bar")
-        row.energy_intensity_kgoe_ton = payload.get("energy_intensity_kgoe_ton")
-        row.carbon_emission_kgco2_ton = payload.get("carbon_emission_kgco2_ton")
-        row.energy_efficiency_percent = payload.get("energy_efficiency_percent")
+        _apply_fields(row, payload)
         await session.commit()
         await session.refresh(row)
         return row
@@ -115,7 +120,7 @@ async def reading_age_seconds(session: AsyncSession, plant_code: str) -> float |
 
 
 async def ensure_unique_index(session: AsyncSession) -> None:
-    """Ensure conflict target exists for duplicate-second protection."""
+    """Ensure conflict target exists for duplicate-second protection + E6 columns."""
     await session.execute(
         text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_sensor_readings_time_plant "
@@ -137,4 +142,14 @@ async def ensure_unique_index(session: AsyncSession) -> None:
             """
         )
     )
+    for col, typ in (
+        ("source", "TEXT"),
+        ("quality", "TEXT"),
+        ("quality_detail", "TEXT"),
+    ):
+        await session.execute(
+            text(
+                f"ALTER TABLE sensor_readings ADD COLUMN IF NOT EXISTS {col} {typ}"
+            )
+        )
     await session.commit()

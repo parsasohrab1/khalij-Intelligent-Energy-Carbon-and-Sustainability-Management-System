@@ -1,59 +1,96 @@
-# OPC-UA / simulator tag map for Phase 1 (FR-DATA-01 / FR-DATA-02)
-# Replace node_id values with real P&ID addresses when connecting to the plant.
+# E6 Plant Connect — OPC-UA tag map for olefin & PTA (FR-DATA-01 / FR-DATA-02)
+#
+# Replace node_id values with real P&ID / OPC addresses before plant cutover.
+# Optional per-tag scale/offset convert raw PLC engineering units to iEMS units.
+# Optional per-plant endpoint overrides the global OPC_UA_ENDPOINT (future multi-server).
 
 plants:
   olefin:
     name: Olefin Unit
+    # endpoint: "opc.tcp://olefin-opc:4840"
     tags:
       electricity_power_mw:
         node_id: "ns=2;s=Olefin.Energy.Power_MW"
         unit: MW
+        scale: 1.0
+        offset: 0.0
         description: Electrical power
       fuel_gas_flow_km3h:
         node_id: "ns=2;s=Olefin.Fuel.GasFlow_kNm3h"
         unit: 1000 m3/h
+        scale: 1.0
+        offset: 0.0
         description: Natural gas fuel flow
       steam_flow_tonh:
         node_id: "ns=2;s=Olefin.Steam.Flow_tph"
         unit: t/h
+        scale: 1.0
+        offset: 0.0
         description: Steam consumption
       feed_flow_tonh:
         node_id: "ns=2;s=Olefin.Process.FeedFlow_tph"
+        write_node_id: "ns=2;s=Olefin.Process.FeedFlow_SP_tph"
+        writable: true
         unit: t/h
-        description: Process feed / production rate
+        scale: 1.0
+        offset: 0.0
+        description: Process feed / production rate (E9 writable SP)
       reactor_temp_c:
         node_id: "ns=2;s=Olefin.Reactor.Temp_C"
+        write_node_id: "ns=2;s=Olefin.Reactor.Temp_SP_C"
+        writable: true
         unit: C
-        description: Reactor temperature
+        scale: 1.0
+        offset: 0.0
+        description: Reactor temperature (E9 writable SP)
       pressure_bar:
         node_id: "ns=2;s=Olefin.Reactor.Pressure_bar"
         unit: bar
+        scale: 1.0
+        offset: 0.0
         description: Reactor pressure
 
   pta:
     name: PTA Unit
+    # endpoint: "opc.tcp://pta-opc:4840"
     tags:
       electricity_power_mw:
         node_id: "ns=2;s=PTA.Energy.Power_MW"
         unit: MW
+        scale: 1.0
+        offset: 0.0
         description: Electrical power
       fuel_gas_flow_km3h:
         node_id: "ns=2;s=PTA.Fuel.GasFlow_kNm3h"
         unit: 1000 m3/h
+        scale: 1.0
+        offset: 0.0
         description: Natural gas fuel flow
       steam_flow_tonh:
         node_id: "ns=2;s=PTA.Steam.Flow_tph"
         unit: t/h
+        scale: 1.0
+        offset: 0.0
         description: Steam consumption
       feed_flow_tonh:
         node_id: "ns=2;s=PTA.Process.FeedFlow_tph"
+        write_node_id: "ns=2;s=PTA.Process.FeedFlow_SP_tph"
+        writable: true
         unit: t/h
-        description: Process feed / production rate
+        scale: 1.0
+        offset: 0.0
+        description: Process feed / production rate (E9 writable SP)
       reactor_temp_c:
         node_id: "ns=2;s=PTA.Reactor.Temp_C"
+        write_node_id: "ns=2;s=PTA.Reactor.Temp_SP_C"
+        writable: true
         unit: C
-        description: Reactor temperature
+        scale: 1.0
+        offset: 0.0
+        description: Reactor temperature (E9 writable SP)
       pressure_bar:
         node_id: "ns=2;s=PTA.Reactor.Pressure_bar"
         unit: bar
+        scale: 1.0
+        offset: 0.0
         description: Reactor pressure

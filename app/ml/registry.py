@@ -29,6 +29,7 @@ class RegisteredModel:
     artifact_path: str
     plant_code: str
     registered_at: str
+    metrics: dict[str, Any] | None = None
 
 
 def _local_dir(settings: Settings) -> Path:
@@ -80,6 +81,7 @@ def save_local(
         artifact_path=str(model_path),
         plant_code=plant_code,
         registered_at=meta["registered_at"],
+        metrics=metrics or {},
     )
 
 
@@ -144,4 +146,5 @@ def load_latest(
         artifact_path=meta["artifact_path"],
         plant_code=plant_code,
         registered_at=meta["registered_at"],
+        metrics=meta.get("metrics") or {},
     )

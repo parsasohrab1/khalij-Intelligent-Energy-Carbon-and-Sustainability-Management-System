@@ -129,14 +129,24 @@ def train_test_split(
     *,
     test_ratio: float = 0.2,
     seed: int = 42,
+    temporal: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    rng = np.random.default_rng(seed)
+    """
+    Split dataset into train/test.
+    temporal=True uses the last test_ratio fraction by row order (plant holdout).
+    """
     n = len(dataset)
+    X, y = dataset.X, dataset.y
+    if temporal:
+        cut = max(1, int(n * (1 - test_ratio)))
+        cut = min(cut, n - 1) if n > 1 else 1
+        return X[:cut], y[:cut], X[cut:], y[cut:]
+
+    rng = np.random.default_rng(seed)
     idx = np.arange(n)
     rng.shuffle(idx)
     cut = max(1, int(n * (1 - test_ratio)))
     train_idx, test_idx = idx[:cut], idx[cut:]
     if len(test_idx) == 0:
         test_idx = train_idx[-max(1, n // 5) :]
-    X, y = dataset.X, dataset.y
     return X[train_idx], y[train_idx], X[test_idx], y[test_idx]

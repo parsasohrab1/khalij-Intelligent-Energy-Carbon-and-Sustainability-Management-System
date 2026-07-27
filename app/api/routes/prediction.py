@@ -1,6 +1,8 @@
-"""FR-ML-01 / FR-ML-02 / FR-ML-03 — prediction, training, VSG, what-if."""
+"""FR-ML-01 / FR-ML-02 / FR-ML-03 — prediction, training, VSG, what-if (E8 trust)."""
 
 from __future__ import annotations
+
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,9 +11,15 @@ from app.api.deps import require_action
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.ml.dataset import load_db_dataset
+from app.ml.physics_calibrate import fit_calibration_from_xy, load_calibration, save_calibration
 from app.ml.registry import load_latest
-from app.ml.serve import persist_prediction, predict_with_model, resolve_features, simulate_what_if_ml
-from app.ml.train import train_model
+from app.ml.serve import (
+    ModelUnavailableError,
+    persist_prediction,
+    predict_for_plant,
+    simulate_what_if_ml,
+)
+from app.ml.train import TrustedDataError, evaluate_drift, model_trust_status, train_model
 from app.schemas import (
     ModelInfoOut,
     PredictionRequest,
@@ -33,13 +41,17 @@ async def predict(
     body: PredictionRequest,
     db: AsyncSession = Depends(get_db),
 ) -> PredictionResponse:
-    features = await resolve_features(db, body.plant_code)
-    result = predict_with_model(
-        features=features,
-        horizon_minutes=body.horizon_minutes,
-        model=body.model,
-        plant_code=body.plant_code,
-    )
+    try:
+        result = await predict_for_plant(
+            db,
+            plant_code=body.plant_code,
+            horizon_minutes=body.horizon_minutes,
+            model=body.model,
+            settings=get_settings(),
+        )
+    except ModelUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
     if result.latency_ms >= get_settings().ml_max_latency_ms:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -53,7 +65,6 @@ async def predict(
             horizon_minutes=body.horizon_minutes,
         )
     except Exception:
-        # Persistence is best-effort; prediction still returned
         pass
 
     note = (
@@ -71,20 +82,25 @@ async def predict(
         model_version=result.model_version,
         source=result.source,
         note=note,
+        trusted=result.trusted,
     )
 
 
 @router.post("/what-if", response_model=WhatIfResponse)
 async def what_if(body: WhatIfRequest) -> WhatIfResponse:
-    sim = simulate_what_if_ml(
-        plant_code=body.plant_code,
-        reactor_temp_c=body.reactor_temp_c,
-        feed_flow_tonh=body.feed_flow_tonh,
-        fuel_gas_flow_km3h=body.fuel_gas_flow_km3h,
-        steam_flow_tonh=body.steam_flow_tonh,
-        electricity_power_mw=body.electricity_power_mw,
-        model=body.model if hasattr(body, "model") else "elm",
-    )
+    try:
+        sim = simulate_what_if_ml(
+            plant_code=body.plant_code,
+            reactor_temp_c=body.reactor_temp_c,
+            feed_flow_tonh=body.feed_flow_tonh,
+            fuel_gas_flow_km3h=body.fuel_gas_flow_km3h,
+            steam_flow_tonh=body.steam_flow_tonh,
+            electricity_power_mw=body.electricity_power_mw,
+            model=body.model if hasattr(body, "model") else "elm",
+            settings=get_settings(),
+        )
+    except ModelUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return WhatIfResponse(
         plant_code=body.plant_code,
         estimated_energy_intensity_kgoe_ton=sim["estimated_energy_intensity_kgoe_ton"],
@@ -101,6 +117,12 @@ async def virtual_sample_generation(
     body: VSGRequest,
     db: AsyncSession = Depends(get_db),
 ) -> VSGResponse:
+    settings = get_settings()
+    if settings.trusted_mode_active and not settings.ml_allow_vsg_in_trusted:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="VSG disabled in trusted mode (set ML_ALLOW_VSG_IN_TRUSTED=true to override)",
+        )
     real_frame = None
     plant_code = body.plant_code if hasattr(body, "plant_code") else "olefin"
     try:
@@ -130,12 +152,15 @@ async def train(
     db: AsyncSession = Depends(get_db),
     _user=Depends(require_action("train")),
 ) -> TrainResponse:
-    result = await train_model(
-        kind=body.model,
-        plant_code=body.plant_code,
-        session=db,
-        settings=get_settings(),
-    )
+    try:
+        result = await train_model(
+            kind=body.model,
+            plant_code=body.plant_code,
+            session=db,
+            settings=get_settings(),
+        )
+    except TrustedDataError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return TrainResponse(
         plant_code=result.plant_code,
         model=result.kind,
@@ -148,6 +173,9 @@ async def train(
         model_version=result.registered.version,
         mlflow_run_id=result.mlflow_run_id,
         artifact_path=result.registered.artifact_path,
+        trusted=result.trusted,
+        holdout_temporal=result.holdout_temporal,
+        physics_cal_version=result.physics_cal_version,
     )
 
 
@@ -158,6 +186,7 @@ async def get_model_info(plant_code: str, model: str) -> ModelInfoOut:
     registered = load_latest(model, plant_code)  # type: ignore[arg-type]
     if registered is None:
         raise HTTPException(status_code=404, detail="No registered model found")
+    meta = registered.metrics or {}
     return ModelInfoOut(
         plant_code=plant_code,
         model=model,
@@ -166,4 +195,64 @@ async def get_model_info(plant_code: str, model: str) -> ModelInfoOut:
         artifact_path=registered.artifact_path,
         registered_at=registered.registered_at,
         mlflow_run_id=registered.run_id,
+        data_source=meta.get("data_source"),
+        holdout_temporal=bool(meta.get("holdout_temporal")),
+        trusted=bool(meta.get("trusted")),
+        physics_cal_version=meta.get("physics_cal_version"),
     )
+
+
+@router.get("/trust/{plant_code}/{model}")
+async def get_trust_status(plant_code: str, model: str) -> dict[str, Any]:
+    if model not in {"elm", "lstm"}:
+        raise HTTPException(status_code=400, detail="model must be elm or lstm")
+    return model_trust_status(plant_code=plant_code, kind=model)  # type: ignore[arg-type]
+
+
+@router.get("/drift/{plant_code}/{model}")
+async def get_drift(
+    plant_code: str,
+    model: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    if model not in {"elm", "lstm"}:
+        raise HTTPException(status_code=400, detail="model must be elm or lstm")
+    return await evaluate_drift(db, plant_code=plant_code, kind=model)  # type: ignore[arg-type]
+
+
+@router.get("/calibrate/{plant_code}")
+async def get_calibration(plant_code: str) -> dict[str, Any]:
+    cal = load_calibration(plant_code, get_settings())
+    return {
+        "plant_code": cal.plant_code,
+        "energy_scale": cal.energy_scale,
+        "energy_offset": cal.energy_offset,
+        "carbon_scale": cal.carbon_scale,
+        "carbon_offset": cal.carbon_offset,
+        "version": cal.version,
+    }
+
+
+@router.post("/calibrate/{plant_code}")
+async def fit_calibration(
+    plant_code: str,
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(require_action("train")),
+) -> dict[str, Any]:
+    ds = await load_db_dataset(db, plant_code, limit=5000, lookback_hours=get_settings().ml_lookback_hours)
+    if ds is None or len(ds) < 20:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Need ≥20 plant samples to calibrate '{plant_code}'",
+        )
+    cal = fit_calibration_from_xy(ds.X, ds.y, plant_code)
+    save_calibration(cal, get_settings())
+    return {
+        "plant_code": cal.plant_code,
+        "energy_scale": cal.energy_scale,
+        "energy_offset": cal.energy_offset,
+        "carbon_scale": cal.carbon_scale,
+        "carbon_offset": cal.carbon_offset,
+        "version": cal.version,
+        "n_samples": len(ds),
+    }

@@ -1,0 +1,27 @@
+# E10 — Light Scope 3 emission factors (simplified GHG Protocol proxies)
+# Not a full inventory — activity × factor for ESG pack totals.
+#
+# Categories used:
+#   cat3_fuel_upstream_kgco2_per_m3  — upstream fuel (WTT) per m³ gas
+#   cat1_purchased_goods_kgco2_per_ton — purchased goods / feedstock proxy per product ton
+#   cat5_waste_kgco2_per_ton         — waste treatment proxy per product ton
+
+version: "scope3-light-2026.1"
+source: "Illustrative Scope 3 proxies for ESG packs (replace with verified LCA factors)"
+
+defaults:
+  cat3_fuel_upstream_kgco2_per_m3: 0.35
+  cat1_purchased_goods_kgco2_per_ton: 12.0
+  cat5_waste_kgco2_per_ton: 1.5
+
+plants:
+  olefin:
+    cat3_fuel_upstream_kgco2_per_m3: 0.36
+    cat1_purchased_goods_kgco2_per_ton: 14.0
+    cat5_waste_kgco2_per_ton: 1.6
+    notes: "Olefin — higher feedstock embodied carbon proxy"
+  pta:
+    cat3_fuel_upstream_kgco2_per_m3: 0.34
+    cat1_purchased_goods_kgco2_per_ton: 11.0
+    cat5_waste_kgco2_per_ton: 1.4
+    notes: "PTA — slightly lower goods proxy"

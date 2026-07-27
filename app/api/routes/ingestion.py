@@ -22,11 +22,14 @@ async def list_tag_map() -> dict:
     return {
         code: {
             "name": plant.name,
+            "endpoint": plant.endpoint,
             "tags": {
                 field: {
                     "node_id": tag.node_id,
                     "unit": tag.unit,
                     "description": tag.description,
+                    "scale": tag.scale,
+                    "offset": tag.offset,
                 }
                 for field, tag in plant.tags.items()
             },
@@ -35,22 +38,28 @@ async def list_tag_map() -> dict:
     }
 
 
-@router.get("/opcua/snapshot", response_model=SensorReadingOut)
-async def opcua_snapshot(plant_code: str = "olefin") -> SensorReadingOut:
-    snap = await read_opcua_plant(plant_code)
-    return SensorReadingOut(
-        time=datetime.fromisoformat(snap["time"].replace("Z", "+00:00")),
-        plant_code=plant_code,
-        electricity_power_mw=snap.get("electricity_power_mw"),
-        fuel_gas_flow_km3h=snap.get("fuel_gas_flow_km3h"),
-        steam_flow_tonh=snap.get("steam_flow_tonh"),
-        feed_flow_tonh=snap.get("feed_flow_tonh"),
-        reactor_temp_c=snap.get("reactor_temp_c"),
-        pressure_bar=snap.get("pressure_bar"),
-        energy_intensity_kgoe_ton=snap.get("energy_intensity_kgoe_ton"),
-        carbon_emission_kgco2_ton=snap.get("carbon_emission_kgco2_ton"),
-        energy_efficiency_percent=snap.get("energy_efficiency_percent"),
-    )
+@router.get("/opcua/snapshot")
+async def opcua_snapshot(plant_code: str = "olefin") -> dict:
+    """Live OPC/simulator snapshot including quality codes (E6)."""
+    return await read_opcua_plant(plant_code)
+
+
+@router.get("/plant-connect/status")
+async def plant_connect_status() -> dict:
+    from app.core.config import get_settings
+    from app.ingestion.opcua_session import get_plant_session
+
+    cfg = get_settings()
+    session = get_plant_session(cfg)
+    return {
+        "plant_connect": cfg.plant_connect,
+        "ingestion_source": cfg.ingestion_source,
+        "opc_ua_endpoint": cfg.opc_ua_endpoint or None,
+        "opc_ua_use_subscription": cfg.opc_ua_use_subscription,
+        "demo_memory_allowed": cfg.allow_demo_memory(),
+        "opc_session_connected": session.connected,
+        "plants": cfg.producer_plant_code_list,
+    }
 
 
 @router.post("/readings", response_model=SensorReadingOut)

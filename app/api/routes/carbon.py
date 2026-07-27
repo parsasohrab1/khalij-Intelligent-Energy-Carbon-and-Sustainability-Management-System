@@ -1,4 +1,4 @@
-"""FR-CAR-01 / FR-CAR-02 / FR-CAR-03 / R-GEN-04 — carbon & sustainability APIs."""
+"""FR-CAR-01 / FR-CAR-02 / FR-CAR-03 / R-GEN-04 / E10 — carbon & ESG APIs."""
 
 from __future__ import annotations
 
@@ -10,19 +10,30 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.carbon.factors import get_emission_factors
-from app.carbon.market import sync_carbon_market
-from app.carbon.reports import generate_and_persist_report, list_reports
 from app.api.deps import require_action
+from app.carbon.assurance import (
+    AssuranceError,
+    approve_report,
+    get_report,
+    list_assurance_events,
+    lock_report,
+    submit_report,
+)
+from app.carbon.esg_pack import build_esg_pack
+from app.carbon.factors import get_emission_factors
+from app.carbon.market import list_market_syncs, sync_carbon_market
+from app.carbon.reports import generate_and_persist_report, list_reports
 from app.core.config import get_settings
 from app.db.models import CarbonReport, Plant
 from app.db.session import get_db
 from app.repositories import sensors as sensor_repo
 from app.schemas import (
+    AssuranceActionRequest,
+    CarbonAssuranceEventOut,
     CarbonFactorOut,
     CarbonMarketSyncOut,
     CarbonReportOut,
@@ -30,9 +41,35 @@ from app.schemas import (
     GenerateReportRequest,
     GenerateReportResponse,
 )
+from app.services.auth import CurrentUser
 from app.services.carbon import compute_scopes
 
 router = APIRouter(prefix="/carbon", tags=["carbon"])
+
+
+def _report_out(report: CarbonReport, plant_code: str) -> CarbonReportOut:
+    scope3 = getattr(report, "scope3_kgco2", None)
+    s3 = float(scope3 or 0.0)
+    return CarbonReportOut(
+        id=report.id,
+        plant_code=plant_code,
+        period_type=report.period_type,  # type: ignore[arg-type]
+        period_start=report.period_start,
+        period_end=report.period_end,
+        scope1_kgco2=report.scope1_kgco2,
+        scope2_kgco2=report.scope2_kgco2,
+        scope3_kgco2=scope3,
+        total_kgco2=report.scope1_kgco2 + report.scope2_kgco2 + s3,
+        carbon_intensity_kgco2_ton=report.carbon_intensity_kgco2_ton,
+        product_ton=report.product_ton,
+        sample_count=report.sample_count,
+        factors_version=report.factors_version,
+        assurance_status=getattr(report, "assurance_status", None) or "draft",
+        submitted_by=getattr(report, "submitted_by", None),
+        approved_by=getattr(report, "approved_by", None),
+        locked_by=getattr(report, "locked_by", None),
+        created_at=report.created_at,
+    )
 
 
 @router.get("/factors", response_model=list[CarbonFactorOut])
@@ -60,10 +97,6 @@ async def carbon_scopes(
     ),
     db: AsyncSession = Depends(get_db),
 ) -> CarbonScopeOut:
-    """
-    Instant: compute from latest sensor reading with per-plant IPCC factors.
-    daily/monthly/yearly: prefer persisted carbon_reports; else estimate from live snapshot.
-    """
     if period_type == "instant":
         latest = await sensor_repo.get_latest_reading(db, plant_code)
         if latest is None:
@@ -96,18 +129,21 @@ async def carbon_scopes(
     )
     if reports:
         report, code = reports[0]
+        scope3 = float(getattr(report, "scope3_kgco2", None) or 0.0)
         return CarbonScopeOut(
             plant_code=code,
             period_type=period_type,  # type: ignore[arg-type]
             scope1_kgco2=report.scope1_kgco2,
             scope2_kgco2=report.scope2_kgco2,
-            total_kgco2=report.scope1_kgco2 + report.scope2_kgco2,
+            scope3_kgco2=getattr(report, "scope3_kgco2", None),
+            total_kgco2=report.scope1_kgco2 + report.scope2_kgco2 + scope3,
             carbon_intensity_kgco2_ton=report.carbon_intensity_kgco2_ton,
             product_ton=report.product_ton,
             factors_version=report.factors_version,
             report_id=report.id,
             period_start=report.period_start,
             period_end=report.period_end,
+            assurance_status=getattr(report, "assurance_status", None),
         )
 
     raise HTTPException(
@@ -142,23 +178,7 @@ async def generate_report(
             )
             if result is None:
                 continue
-            generated.append(
-                CarbonReportOut(
-                    id=result.report.id,
-                    plant_code=result.plant_code,
-                    period_type=result.report.period_type,  # type: ignore[arg-type]
-                    period_start=result.report.period_start,
-                    period_end=result.report.period_end,
-                    scope1_kgco2=result.report.scope1_kgco2,
-                    scope2_kgco2=result.report.scope2_kgco2,
-                    total_kgco2=result.report.scope1_kgco2 + result.report.scope2_kgco2,
-                    carbon_intensity_kgco2_ton=result.report.carbon_intensity_kgco2_ton,
-                    product_ton=result.report.product_ton,
-                    sample_count=result.report.sample_count,
-                    factors_version=result.report.factors_version,
-                    created_at=result.report.created_at,
-                )
-            )
+            generated.append(_report_out(result.report, result.plant_code))
 
     return GenerateReportResponse(
         generated=len(generated),
@@ -177,24 +197,7 @@ async def get_reports(
     rows = await list_reports(
         db, plant_code=plant_code, period_type=period_type, limit=limit
     )
-    return [
-        CarbonReportOut(
-            id=report.id,
-            plant_code=code,
-            period_type=report.period_type,  # type: ignore[arg-type]
-            period_start=report.period_start,
-            period_end=report.period_end,
-            scope1_kgco2=report.scope1_kgco2,
-            scope2_kgco2=report.scope2_kgco2,
-            total_kgco2=report.scope1_kgco2 + report.scope2_kgco2,
-            carbon_intensity_kgco2_ton=report.carbon_intensity_kgco2_ton,
-            product_ton=report.product_ton,
-            sample_count=report.sample_count,
-            factors_version=report.factors_version,
-            created_at=report.created_at,
-        )
-        for report, code in rows
-    ]
+    return [_report_out(report, code) for report, code in rows]
 
 
 @router.get("/reports/{report_id}/download")
@@ -212,6 +215,7 @@ async def download_report(
     if row is None:
         raise HTTPException(status_code=404, detail="Report not found")
     report, plant_code = row
+    scope3 = float(getattr(report, "scope3_kgco2", None) or 0.0)
 
     payload = {
         "id": report.id,
@@ -221,11 +225,13 @@ async def download_report(
         "period_end": report.period_end.isoformat(),
         "scope1_kgco2": report.scope1_kgco2,
         "scope2_kgco2": report.scope2_kgco2,
-        "total_kgco2": report.scope1_kgco2 + report.scope2_kgco2,
+        "scope3_kgco2": getattr(report, "scope3_kgco2", None),
+        "total_kgco2": report.scope1_kgco2 + report.scope2_kgco2 + scope3,
         "carbon_intensity_kgco2_ton": report.carbon_intensity_kgco2_ton,
         "product_ton": report.product_ton,
         "sample_count": report.sample_count,
         "factors_version": report.factors_version,
+        "assurance_status": getattr(report, "assurance_status", None),
         "created_at": report.created_at.isoformat() if report.created_at else None,
     }
 
@@ -248,13 +254,135 @@ async def download_report(
     )
 
 
+@router.get("/reports/{report_id}/pack")
+async def download_esg_pack(
+    report_id: int,
+    format: Literal["html", "csv"] = Query(default="html"),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """E10 — ESG-presentable pack (HTML/CSV), not raw JSON."""
+    found = await get_report(db, report_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    report, plant_code = found
+    pack = build_esg_pack(report, plant_code)
+    if format == "csv":
+        return PlainTextResponse(
+            content=pack.csv_text,
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="{pack.filename_stem}.csv"'
+            },
+        )
+    return HTMLResponse(
+        content=pack.html,
+        headers={
+            "Content-Disposition": f'inline; filename="{pack.filename_stem}.html"'
+        },
+    )
+
+
+@router.post("/reports/{report_id}/submit", response_model=CarbonReportOut)
+async def submit_assurance(
+    report_id: int,
+    body: AssuranceActionRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_action("operate")),
+) -> CarbonReportOut:
+    try:
+        report = await submit_report(
+            db,
+            report_id=report_id,
+            actor=user.username,
+            comment=body.comment if body else None,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Report not found") from None
+    except AssuranceError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    found = await get_report(db, report.id)
+    assert found is not None
+    return _report_out(found[0], found[1])
+
+
+@router.post("/reports/{report_id}/approve", response_model=CarbonReportOut)
+async def approve_assurance(
+    report_id: int,
+    body: AssuranceActionRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_action("operate")),
+) -> CarbonReportOut:
+    try:
+        report = await approve_report(
+            db,
+            report_id=report_id,
+            actor=user.username,
+            comment=body.comment if body else None,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Report not found") from None
+    except AssuranceError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    found = await get_report(db, report.id)
+    assert found is not None
+    return _report_out(found[0], found[1])
+
+
+@router.post("/reports/{report_id}/lock", response_model=CarbonReportOut)
+async def lock_assurance(
+    report_id: int,
+    body: AssuranceActionRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_action("settings")),
+) -> CarbonReportOut:
+    try:
+        report = await lock_report(
+            db,
+            report_id=report_id,
+            actor=user.username,
+            comment=body.comment if body else None,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Report not found") from None
+    except AssuranceError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    found = await get_report(db, report.id)
+    assert found is not None
+    return _report_out(found[0], found[1])
+
+
+@router.get("/reports/{report_id}/assurance", response_model=list[CarbonAssuranceEventOut])
+async def assurance_trail(
+    report_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> list[CarbonAssuranceEventOut]:
+    found = await get_report(db, report_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    events = await list_assurance_events(db, report_id)
+    return [
+        CarbonAssuranceEventOut(
+            id=e.id,
+            report_id=e.report_id,
+            event_type=e.event_type,
+            actor=e.actor,
+            detail=json.loads(e.detail_json or "{}"),
+            created_at=e.created_at,
+        )
+        for e in events
+    ]
+
+
 @router.post("/market/sync", response_model=CarbonMarketSyncOut)
 async def market_sync(
     plant_code: str | None = None,
+    force_unlocked: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
     _user=Depends(require_action("operate")),
 ) -> CarbonMarketSyncOut:
-    result = await sync_carbon_market(db, plant_code=plant_code)
+    result = await sync_carbon_market(
+        db, plant_code=plant_code, force_unlocked=force_unlocked
+    )
     return CarbonMarketSyncOut(
         status=result.status,
         synced_at=result.synced_at,
@@ -263,7 +391,30 @@ async def market_sync(
         reports_synced=result.reports_synced,
         batch_id=result.batch_id,
         payload_path=result.payload_path,
+        external_ref=result.external_ref,
     )
+
+
+@router.get("/market/syncs", response_model=list[CarbonMarketSyncOut])
+async def market_sync_history(
+    plant_code: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+) -> list[CarbonMarketSyncOut]:
+    rows = await list_market_syncs(db, plant_code=plant_code, limit=limit)
+    return [
+        CarbonMarketSyncOut(
+            status=r.status,
+            synced_at=r.synced_at,
+            registry=r.registry,
+            message=r.message,
+            reports_synced=r.reports_synced,
+            batch_id=r.batch_id,
+            payload_path=r.payload_path,
+            external_ref=getattr(r, "external_ref", None),
+        )
+        for r in rows
+    ]
 
 
 @router.get("/kpi/intensity")
@@ -293,6 +444,8 @@ async def carbon_intensity_kpi(
             "carbon_intensity_kgco2_ton": report.carbon_intensity_kgco2_ton,
             "scope1_kgco2": report.scope1_kgco2,
             "scope2_kgco2": report.scope2_kgco2,
+            "scope3_kgco2": getattr(report, "scope3_kgco2", None),
+            "assurance_status": getattr(report, "assurance_status", None),
             "period_start": report.period_start.isoformat(),
             "period_end": report.period_end.isoformat(),
             "report_id": report.id,

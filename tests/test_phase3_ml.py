@@ -21,6 +21,7 @@ def _isolated_model_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("ML_LSTM_EPOCHS", "8")
     monkeypatch.setenv("ML_ELM_HIDDEN", "48")
     monkeypatch.setenv("MLFLOW_ENABLED", "false")
+    monkeypatch.setenv("ML_PREFER_TORCH_LSTM", "false")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

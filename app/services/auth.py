@@ -174,6 +174,7 @@ def role_allows(role: Role, action: str) -> bool:
         "predict": {Role.OPERATOR, Role.ADMIN},
         "operate": {Role.OPERATOR, Role.ADMIN},
         "train": {Role.OPERATOR, Role.ADMIN},
+        "apply": {Role.ADMIN},  # E9 live/dry setpoint apply
         "settings": {Role.ADMIN},
     }
     return role in matrix.get(action, set())

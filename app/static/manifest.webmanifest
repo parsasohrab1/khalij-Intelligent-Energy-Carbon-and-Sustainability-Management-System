@@ -1,0 +1,19 @@
+{
+  "name": "Khalij iEMS",
+  "short_name": "iEMS",
+  "description": "Operator console — energy, carbon, notifications",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#7cbf4a",
+  "lang": "fa",
+  "dir": "rtl",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

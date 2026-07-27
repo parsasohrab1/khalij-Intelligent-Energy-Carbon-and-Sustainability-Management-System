@@ -1,16 +1,75 @@
-"""Persist optimization recommendations and operator feedback."""
+"""Persist optimization recommendations, feedback, and E9 audit events."""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import OptimizationRecommendation, RecommendationFeedback
+from app.db.models import (
+    OptimizationRecommendation,
+    RecommendationAuditEvent,
+    RecommendationFeedback,
+)
 from app.optimization.engine import SetpointAdvice
 from app.optimization.simulate import AdviceSimulation
+
+
+async def ensure_e9_schema(session: AsyncSession) -> None:
+    """Best-effort ADD COLUMN / CREATE for demo volumes without manual migrate."""
+    alters = [
+        "ALTER TABLE optimization_recommendations ADD COLUMN IF NOT EXISTS approved_by TEXT",
+        "ALTER TABLE optimization_recommendations ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ",
+        "ALTER TABLE optimization_recommendations ADD COLUMN IF NOT EXISTS applied_by TEXT",
+        "ALTER TABLE optimization_recommendations ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ",
+        "ALTER TABLE optimization_recommendations ADD COLUMN IF NOT EXISTS apply_mode VARCHAR(16)",
+        "ALTER TABLE optimization_recommendations ADD COLUMN IF NOT EXISTS baseline_intensity DOUBLE PRECISION",
+        "ALTER TABLE optimization_recommendations ADD COLUMN IF NOT EXISTS baseline_efficiency DOUBLE PRECISION",
+        "ALTER TABLE optimization_recommendations ADD COLUMN IF NOT EXISTS realized_saving_kwh_per_h DOUBLE PRECISION",
+        """
+        CREATE TABLE IF NOT EXISTS recommendation_audit_events (
+            id                  SERIAL PRIMARY KEY,
+            recommendation_id   INTEGER NOT NULL REFERENCES optimization_recommendations(id),
+            event_type          TEXT NOT NULL,
+            actor               TEXT NOT NULL,
+            detail_json         TEXT NOT NULL DEFAULT '{}',
+            created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+    ]
+    for stmt in alters:
+        try:
+            await session.execute(text(stmt))
+        except Exception:
+            await session.rollback()
+            return
+    await session.commit()
+
+
+async def append_audit(
+    session: AsyncSession,
+    *,
+    recommendation_id: int,
+    event_type: str,
+    actor: str,
+    detail: dict[str, Any] | None = None,
+    commit: bool = True,
+) -> RecommendationAuditEvent:
+    row = RecommendationAuditEvent(
+        recommendation_id=recommendation_id,
+        event_type=event_type,
+        actor=actor,
+        detail_json=json.dumps(detail or {}),
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(row)
+    if commit:
+        await session.commit()
+        await session.refresh(row)
+    return row
 
 
 async def persist_recommendations(
@@ -18,6 +77,7 @@ async def persist_recommendations(
     advice_items: list[SetpointAdvice],
     simulations: dict[str, AdviceSimulation] | None = None,
 ) -> list[OptimizationRecommendation]:
+    await ensure_e9_schema(session)
     rows: list[OptimizationRecommendation] = []
     simulations = simulations or {}
     now = datetime.now(timezone.utc)
@@ -46,6 +106,13 @@ async def persist_recommendations(
     await session.commit()
     for row in rows:
         await session.refresh(row)
+        await append_audit(
+            session,
+            recommendation_id=row.id,
+            event_type="created",
+            actor="system",
+            detail={"plant_code": row.plant_code, "title": row.title},
+        )
     return rows
 
 
@@ -79,6 +146,21 @@ async def get_recommendation(
     return result.scalar_one_or_none()
 
 
+async def list_audit_events(
+    session: AsyncSession,
+    recommendation_id: int,
+    *,
+    limit: int = 100,
+) -> list[RecommendationAuditEvent]:
+    stmt = (
+        select(RecommendationAuditEvent)
+        .where(RecommendationAuditEvent.recommendation_id == recommendation_id)
+        .order_by(RecommendationAuditEvent.created_at.asc())
+        .limit(limit)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
 async def submit_feedback(
     session: AsyncSession,
     *,
@@ -92,10 +174,13 @@ async def submit_feedback(
         raise KeyError(f"Recommendation {recommendation_id} not found")
     if decision not in {"accepted", "rejected"}:
         raise ValueError("decision must be accepted or rejected")
+    if rec.status not in {"pending", "accepted"}:
+        raise ValueError(f"Cannot {decision} recommendation in status={rec.status}")
 
     now = datetime.now(timezone.utc)
     rec.status = decision
-    rec.resolved_at = now
+    if decision == "rejected":
+        rec.resolved_at = now
     feedback = RecommendationFeedback(
         recommendation_id=recommendation_id,
         decision=decision,
@@ -104,6 +189,14 @@ async def submit_feedback(
         created_at=now,
     )
     session.add(feedback)
+    await append_audit(
+        session,
+        recommendation_id=recommendation_id,
+        event_type=decision,
+        actor=operator,
+        detail={"comment": comment},
+        commit=False,
+    )
     await session.commit()
     await session.refresh(rec)
     await session.refresh(feedback)

@@ -48,9 +48,23 @@ async def _override_db():
 
 
 def test_root():
-    r = client.get("/")
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code in {302, 307}
+    assert r.headers["location"] == "/dashboard"
+
+
+def test_live_dashboard_page():
+    r = client.get("/dashboard")
+    assert r.status_code == 200
+    assert "text/html" in r.headers.get("content-type", "")
+    assert "Khalij" in r.text
+
+
+def test_api_info():
+    r = client.get("/api")
     assert r.status_code == 200
     assert r.json()["app"] == "iEMS"
+    assert r.json()["dashboard"] == "/dashboard"
 
 
 def test_health():

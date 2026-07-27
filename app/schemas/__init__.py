@@ -28,6 +28,8 @@ class SensorReadingOut(SensorReadingIn):
     energy_intensity_kgoe_ton: float | None = None
     carbon_emission_kgco2_ton: float | None = None
     energy_efficiency_percent: float | None = None
+    source: str | None = None
+    quality: str | None = None
 
 
 class EnergyDashboardOut(BaseModel):
@@ -45,19 +47,27 @@ class EnergyDashboardOut(BaseModel):
         default=None, description="FR-CAR-03 KPI"
     )
     energy_efficiency_percent: float | None = None
-    stream_status: Literal["ok", "stale", "missing"] | None = None
+    stream_status: Literal["ok", "stale", "missing", "bad_quality"] | None = None
     data_age_seconds: float | None = None
     factors_version: str | None = None
     scope1_kgco2: float | None = None
     scope2_kgco2: float | None = None
+    source: str | None = None
+    quality: str | None = None
 
 
 class EnergyHistoryPoint(BaseModel):
     time: datetime
     electricity_power_mw: float | None = None
+    fuel_gas_flow_km3h: float | None = None
+    steam_flow_tonh: float | None = None
+    feed_flow_tonh: float | None = None
     energy_intensity_kgoe_ton: float | None = None
     carbon_emission_kgco2_ton: float | None = None
+    carbon_intensity_kgco2_ton: float | None = None
     energy_efficiency_percent: float | None = None
+    scope1_kgco2: float | None = None
+    scope2_kgco2: float | None = None
 
 
 class EnergyHistoryOut(BaseModel):
@@ -76,6 +86,13 @@ class StreamAlertOut(BaseModel):
     age_seconds: float | None = None
     created_at: datetime
     resolved_at: datetime | None = None
+    severity: Literal["info", "warning", "critical"] = "warning"
+
+
+class MeResponse(BaseModel):
+    username: str
+    role: str
+    actions: dict[str, bool]
 
 
 class PredictionRequest(BaseModel):
@@ -95,6 +112,7 @@ class PredictionResponse(BaseModel):
     model_version: str | None = None
     source: str | None = None
     note: str = "ELM/LSTM via local registry / MLflow"
+    trusted: bool = False
 
 
 class WhatIfRequest(BaseModel):
@@ -152,6 +170,9 @@ class TrainResponse(BaseModel):
     model_version: str
     mlflow_run_id: str | None = None
     artifact_path: str
+    trusted: bool = False
+    holdout_temporal: bool = False
+    physics_cal_version: str | None = None
 
 
 class ModelInfoOut(BaseModel):
@@ -162,6 +183,10 @@ class ModelInfoOut(BaseModel):
     artifact_path: str
     registered_at: str
     mlflow_run_id: str | None = None
+    data_source: str | None = None
+    holdout_temporal: bool = False
+    trusted: bool = False
+    physics_cal_version: str | None = None
 
 
 class OptimizationRequest(BaseModel):
@@ -197,6 +222,10 @@ class SetpointAdviceOut(BaseModel):
     simulated_intensity_delta: float | None = None
     simulated_efficiency_delta_pp: float | None = None
     status: str | None = "pending"
+    apply_mode: str | None = None
+    realized_saving_kwh_per_h: float | None = None
+    approved_by: str | None = None
+    applied_by: str | None = None
 
 
 class AdviceSimulationOut(BaseModel):
@@ -237,11 +266,57 @@ class FeedbackOut(BaseModel):
     created_at: datetime
 
 
+class ApproveRequest(BaseModel):
+    comment: str | None = None
+
+
+class ApplyRequest(BaseModel):
+    dry_run: bool | None = None  # None → OPC_WRITE_DRY_RUN_DEFAULT
+
+
+class ApplyOut(BaseModel):
+    recommendation_id: int
+    status: str
+    apply_mode: str
+    dry_run: bool
+    planned: list[dict] = Field(default_factory=list)
+    written: list[dict] = Field(default_factory=list)
+    skipped: list[str] = Field(default_factory=list)
+    detail: str = ""
+    baseline_intensity: float | None = None
+    baseline_efficiency: float | None = None
+
+
+class ImpactOut(BaseModel):
+    recommendation_id: int
+    plant_code: str
+    status: str
+    baseline_intensity: float | None = None
+    current_intensity: float | None = None
+    baseline_efficiency: float | None = None
+    current_efficiency: float | None = None
+    estimated_saving_kwh_per_h: float | None = None
+    realized_saving_kwh_per_h: float | None = None
+    window_minutes: int
+    samples: int
+    detail: str = ""
+
+
+class AuditEventOut(BaseModel):
+    id: int
+    recommendation_id: int
+    event_type: str
+    actor: str
+    detail: dict = Field(default_factory=dict)
+    created_at: datetime
+
+
 class CarbonScopeOut(BaseModel):
     plant_code: str
     period_type: Literal["instant", "daily", "monthly", "yearly"]
     scope1_kgco2: float
     scope2_kgco2: float
+    scope3_kgco2: float | None = None
     total_kgco2: float
     carbon_intensity_kgco2_ton: float | None = None
     product_ton: float | None = None
@@ -249,6 +324,7 @@ class CarbonScopeOut(BaseModel):
     report_id: int | None = None
     period_start: datetime | None = None
     period_end: datetime | None = None
+    assurance_status: str | None = None
 
 
 class CarbonFactorOut(BaseModel):
@@ -269,11 +345,16 @@ class CarbonReportOut(BaseModel):
     period_end: datetime
     scope1_kgco2: float
     scope2_kgco2: float
+    scope3_kgco2: float | None = None
     total_kgco2: float
     carbon_intensity_kgco2_ton: float | None = None
     product_ton: float | None = None
     sample_count: int | None = None
     factors_version: str | None = None
+    assurance_status: str | None = "draft"
+    submitted_by: str | None = None
+    approved_by: str | None = None
+    locked_by: str | None = None
     created_at: datetime | None = None
 
 
@@ -301,6 +382,20 @@ class CarbonMarketSyncOut(BaseModel):
     reports_synced: int = 0
     batch_id: str | None = None
     payload_path: str | None = None
+    external_ref: str | None = None
+
+
+class CarbonAssuranceEventOut(BaseModel):
+    id: int
+    report_id: int
+    event_type: str
+    actor: str
+    detail: dict = Field(default_factory=dict)
+    created_at: datetime
+
+
+class AssuranceActionRequest(BaseModel):
+    comment: str | None = None
 
 
 class TokenResponse(BaseModel):

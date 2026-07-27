@@ -52,7 +52,7 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       INGESTION_RATE_HZ: "1.0"
       INGESTION_SOURCE: simulator
-      PRODUCER_PLANT_CODES: olefin
+      PRODUCER_PLANT_CODES: olefin,pta
       OPC_UA_TAG_MAP_PATH: infra/opcua/tags.yaml
     depends_on:
       kafka:

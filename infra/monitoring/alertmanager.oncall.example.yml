@@ -1,0 +1,23 @@
+# Example 24×7 on-call receiver — copy to alertmanager.yml or mount as override.
+# docker compose: mount this file over /etc/alertmanager/alertmanager.yml
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: oncall
+  group_by: [alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 1h
+
+receivers:
+  - name: oncall
+    webhook_configs:
+      - url: https://hooks.slack.com/services/REPLACE/ME
+        send_resolved: true
+    # email_configs:
+    #   - to: sre@example.com
+    #     from: alertmanager@iems.example.com
+    #     smarthost: smtp.example.com:587
+    #     auth_username: alertmanager
+    #     auth_password: secret

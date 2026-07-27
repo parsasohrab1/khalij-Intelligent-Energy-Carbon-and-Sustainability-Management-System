@@ -1,4 +1,4 @@
-"""Stream freshness checks and alert records (Phase 1)."""
+"""Stream freshness checks and alert records (Phase 1 + E6 quality)."""
 
 from __future__ import annotations
 
@@ -12,21 +12,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.db.models import StreamAlert
+from app.ingestion.quality import quality_is_healthy
 from app.repositories import sensors as sensor_repo
 
 
 class AlertType(str, Enum):
     STREAM_STALE = "stream_stale"
     STREAM_MISSING = "stream_missing"
+    DATA_QUALITY = "data_quality"
 
 
 @dataclass
 class FreshnessStatus:
     plant_code: str
-    status: str  # ok | stale | missing
+    status: str  # ok | stale | missing | bad_quality
     age_seconds: float | None
     threshold_seconds: float
     message: str
+    quality: str | None = None
+    source: str | None = None
 
 
 async def check_freshness(
@@ -37,6 +41,16 @@ async def check_freshness(
     cfg = settings or get_settings()
     age = await sensor_repo.reading_age_seconds(session, plant_code)
     threshold = cfg.stale_data_seconds
+    quality = None
+    source = None
+    try:
+        latest = await sensor_repo.get_latest_reading(session, plant_code)
+        if latest is not None:
+            _, reading = latest
+            quality = getattr(reading, "quality", None)
+            source = getattr(reading, "source", None)
+    except Exception:  # noqa: BLE001
+        latest = None
 
     if age is None:
         return FreshnessStatus(
@@ -45,6 +59,8 @@ async def check_freshness(
             age_seconds=None,
             threshold_seconds=threshold,
             message=f"No sensor readings stored for '{plant_code}'",
+            quality=quality,
+            source=source,
         )
     if age > threshold:
         return FreshnessStatus(
@@ -56,6 +72,20 @@ async def check_freshness(
                 f"Stream stale for '{plant_code}': last sample {age:.1f}s ago "
                 f"(threshold {threshold:.1f}s)"
             ),
+            quality=quality,
+            source=source,
+        )
+    if quality and not quality_is_healthy(
+        quality, allow_uncertain=cfg.opc_ua_allow_uncertain
+    ):
+        return FreshnessStatus(
+            plant_code=plant_code,
+            status="bad_quality",
+            age_seconds=round(age, 3),
+            threshold_seconds=threshold,
+            message=f"OPC data quality '{quality}' for '{plant_code}'",
+            quality=quality,
+            source=source,
         )
     return FreshnessStatus(
         plant_code=plant_code,
@@ -63,6 +93,8 @@ async def check_freshness(
         age_seconds=round(age, 3),
         threshold_seconds=threshold,
         message="Stream healthy",
+        quality=quality,
+        source=source,
     )
 
 
@@ -75,13 +107,13 @@ async def raise_alert_if_needed(
         return None
 
     cfg = settings or get_settings()
-    alert_type = (
-        AlertType.STREAM_MISSING.value
-        if status.status == "missing"
-        else AlertType.STREAM_STALE.value
-    )
+    if status.status == "missing":
+        alert_type = AlertType.STREAM_MISSING.value
+    elif status.status == "bad_quality":
+        alert_type = AlertType.DATA_QUALITY.value
+    else:
+        alert_type = AlertType.STREAM_STALE.value
 
-    # Cooldown: skip if an open alert of same type was created recently
     result = await session.execute(
         select(StreamAlert)
         .where(
@@ -142,4 +174,6 @@ def freshness_to_dict(status: FreshnessStatus) -> dict[str, Any]:
         "age_seconds": status.age_seconds,
         "threshold_seconds": status.threshold_seconds,
         "message": status.message,
+        "quality": status.quality,
+        "source": status.source,
     }

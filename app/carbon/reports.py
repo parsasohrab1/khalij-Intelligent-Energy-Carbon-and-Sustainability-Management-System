@@ -13,7 +13,9 @@ from typing import Any, Literal
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.carbon.assurance import ensure_e10_schema
 from app.carbon.factors import factors_for
+from app.carbon.scope3 import compute_scope3
 from app.db.models import CarbonReport, Plant, SensorReading
 from app.services.carbon import CarbonBreakdown, compute_scopes_from_integrals
 
@@ -173,7 +175,14 @@ async def generate_and_persist_report(
         product_ton=aggregates.product_ton,
         plant_code=plant_code,
     )
+    s3 = compute_scope3(
+        plant_code=plant_code,
+        fuel_gas_km3=aggregates.fuel_gas_km3,
+        product_ton=aggregates.product_ton,
+    )
     ef = factors_for(plant_code)
+
+    await ensure_e10_schema(session)
 
     plant_id = (
         await session.execute(select(Plant.id).where(Plant.code == plant_code))
@@ -189,6 +198,28 @@ async def generate_and_persist_report(
         )
     ).scalar_one_or_none()
 
+    scope3_detail = {
+        "cat3_fuel_upstream_kgco2": s3.cat3_fuel_upstream_kgco2,
+        "cat1_purchased_goods_kgco2": s3.cat1_purchased_goods_kgco2,
+        "cat5_waste_kgco2": s3.cat5_waste_kgco2,
+        "factors_version": s3.factors_version,
+        **s3.detail,
+    }
+
+    if existing is not None and (getattr(existing, "assurance_status", None) or "draft") == "locked":
+        logger.warning(
+            "Skipping regenerate for locked report id=%s plant=%s",
+            existing.id,
+            plant_code,
+        )
+        return GeneratedReport(
+            report=existing,
+            breakdown=breakdown,
+            plant_code=plant_code,
+            aggregates=aggregates,
+            factors_version=ef.version,
+        )
+
     if existing is None:
         report = CarbonReport(
             plant_id=plant_id,
@@ -197,10 +228,13 @@ async def generate_and_persist_report(
             period_type=period_type,
             scope1_kgco2=breakdown.scope1_kgco2,
             scope2_kgco2=breakdown.scope2_kgco2,
+            scope3_kgco2=s3.total_kgco2,
+            scope3_detail_json=json.dumps(scope3_detail),
             carbon_intensity_kgco2_ton=breakdown.carbon_intensity_kgco2_ton,
             product_ton=breakdown.product_ton,
             sample_count=aggregates.sample_count,
             factors_version=ef.version,
+            assurance_status="draft",
             created_at=datetime.now(timezone.utc),
         )
         session.add(report)
@@ -209,10 +243,14 @@ async def generate_and_persist_report(
         report.period_end = window.end
         report.scope1_kgco2 = breakdown.scope1_kgco2
         report.scope2_kgco2 = breakdown.scope2_kgco2
+        report.scope3_kgco2 = s3.total_kgco2
+        report.scope3_detail_json = json.dumps(scope3_detail)
         report.carbon_intensity_kgco2_ton = breakdown.carbon_intensity_kgco2_ton
         report.product_ton = breakdown.product_ton
         report.sample_count = aggregates.sample_count
         report.factors_version = ef.version
+        if not getattr(report, "assurance_status", None):
+            report.assurance_status = "draft"
 
     await session.commit()
     await session.refresh(report)

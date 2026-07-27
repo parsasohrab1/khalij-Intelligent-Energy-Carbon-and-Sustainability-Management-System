@@ -1,4 +1,4 @@
-"""FR-CAR-02 — carbon market / registry integration."""
+"""FR-CAR-02 / E10 — carbon market / registry integration (locked reports)."""
 
 from __future__ import annotations
 
@@ -45,6 +45,7 @@ async def build_registry_payload(
     *,
     plant_code: str | None = None,
     limit: int = 20,
+    locked_only: bool = True,
 ) -> list[dict[str, Any]]:
     stmt = (
         select(CarbonReport, Plant.code)
@@ -54,23 +55,46 @@ async def build_registry_payload(
     )
     if plant_code:
         stmt = stmt.where(Plant.code == plant_code)
+    if locked_only:
+        stmt = stmt.where(CarbonReport.assurance_status == "locked")
     rows = (await session.execute(stmt)).all()
-    return [
-        {
-            "plant_code": code,
-            "period_type": report.period_type,
-            "period_start": report.period_start.isoformat(),
-            "period_end": report.period_end.isoformat(),
-            "scope1_kgco2": report.scope1_kgco2,
-            "scope2_kgco2": report.scope2_kgco2,
-            "total_kgco2": report.scope1_kgco2 + report.scope2_kgco2,
-            "carbon_intensity_kgco2_ton": report.carbon_intensity_kgco2_ton,
-            "product_ton": report.product_ton,
-            "factors_version": report.factors_version,
-            "report_id": report.id,
-        }
-        for report, code in rows
-    ]
+    out: list[dict[str, Any]] = []
+    for report, code in rows:
+        scope3 = float(getattr(report, "scope3_kgco2", None) or 0.0)
+        out.append(
+            {
+                "plant_code": code,
+                "period_type": report.period_type,
+                "period_start": report.period_start.isoformat(),
+                "period_end": report.period_end.isoformat(),
+                "scope1_kgco2": report.scope1_kgco2,
+                "scope2_kgco2": report.scope2_kgco2,
+                "scope3_kgco2": scope3,
+                "total_kgco2": report.scope1_kgco2 + report.scope2_kgco2 + scope3,
+                "carbon_intensity_kgco2_ton": report.carbon_intensity_kgco2_ton,
+                "product_ton": report.product_ton,
+                "factors_version": report.factors_version,
+                "assurance_status": getattr(report, "assurance_status", None),
+                "report_id": report.id,
+            }
+        )
+    return out
+
+
+async def list_market_syncs(
+    session: AsyncSession,
+    *,
+    plant_code: str | None = None,
+    limit: int = 50,
+) -> list[CarbonMarketSync]:
+    stmt = (
+        select(CarbonMarketSync)
+        .order_by(CarbonMarketSync.synced_at.desc())
+        .limit(limit)
+    )
+    if plant_code:
+        stmt = stmt.where(CarbonMarketSync.plant_code == plant_code)
+    return list((await session.execute(stmt)).scalars().all())
 
 
 async def sync_carbon_market(
@@ -78,17 +102,21 @@ async def sync_carbon_market(
     *,
     plant_code: str | None = None,
     settings: Settings | None = None,
+    force_unlocked: bool = False,
 ) -> MarketSyncResult:
     """
-    Stage Scope 1/2 reports for an external carbon registry.
+    Stage / POST Scope 1/2/3 reports for an external carbon registry.
 
-    If CARBON_MARKET_API_URL is set, POSTs the payload; otherwise writes a
-    local staging JSON file for offline / partner exchange.
+    By default only **locked** (assurance) reports are included
+    (`CARBON_MARKET_REQUIRE_LOCKED=true`).
     """
     cfg = settings or get_settings()
     now = datetime.now(timezone.utc)
     batch_id = str(uuid.uuid4())
-    payload = await build_registry_payload(session, plant_code=plant_code)
+    locked_only = cfg.carbon_market_require_locked and not force_unlocked
+    payload = await build_registry_payload(
+        session, plant_code=plant_code, locked_only=locked_only
+    )
     registry = cfg.carbon_market_registry_name
     staging = _staging_dir(cfg)
     file_path = staging / f"market_sync_{batch_id}.json"
@@ -97,39 +125,47 @@ async def sync_carbon_market(
         "registry": registry,
         "synced_at": now.isoformat(),
         "plant_filter": plant_code,
+        "locked_only": locked_only,
         "reports": payload,
     }
     file_path.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
 
     external_ref: str | None = None
-    status = "staged"
-    message = f"Staged {len(payload)} report(s) at {file_path.as_posix()}"
+    if not payload and locked_only:
+        status = "empty"
+        message = (
+            "No locked reports to sync. Complete assurance "
+            "(submit → approve → lock) or set CARBON_MARKET_REQUIRE_LOCKED=false"
+        )
+    else:
+        status = "staged"
+        message = f"Staged {len(payload)} report(s) at {file_path.as_posix()}"
 
-    if cfg.carbon_market_api_url:
-        try:
-            headers = {}
-            if cfg.carbon_market_api_token:
-                headers["Authorization"] = f"Bearer {cfg.carbon_market_api_token}"
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    cfg.carbon_market_api_url,
-                    json=envelope,
-                    headers=headers or None,
+        if cfg.carbon_market_api_url and payload:
+            try:
+                headers = {}
+                if cfg.carbon_market_api_token:
+                    headers["Authorization"] = f"Bearer {cfg.carbon_market_api_token}"
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        cfg.carbon_market_api_url,
+                        json=envelope,
+                        headers=headers or None,
+                    )
+                    response.raise_for_status()
+                    body = response.json() if response.content else {}
+                    external_ref = str(
+                        body.get("id") or body.get("reference") or response.status_code
+                    )
+                    status = "synced"
+                    message = f"Posted {len(payload)} report(s) to {registry}"
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Carbon market API sync failed")
+                status = "error"
+                message = (
+                    f"API sync failed ({exc.__class__.__name__}); "
+                    f"payload kept at {file_path}"
                 )
-                response.raise_for_status()
-                body = response.json() if response.content else {}
-                external_ref = str(
-                    body.get("id") or body.get("reference") or response.status_code
-                )
-                status = "synced"
-                message = f"Posted {len(payload)} report(s) to {registry}"
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Carbon market API sync failed")
-            status = "error"
-            message = (
-                f"API sync failed ({exc.__class__.__name__}); "
-                f"payload kept at {file_path}"
-            )
 
     if external_ref:
         message = f"{message} (ref={external_ref})"
@@ -142,6 +178,7 @@ async def sync_carbon_market(
         message=message,
         reports_synced=len(payload),
         payload_path=str(file_path),
+        external_ref=external_ref,
         synced_at=now,
     )
     session.add(record)

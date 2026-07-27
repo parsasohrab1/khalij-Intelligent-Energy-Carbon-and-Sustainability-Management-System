@@ -29,13 +29,18 @@ class SensorProducer:
             key_serializer=lambda v: v.encode("utf-8") if v else None,
         )
         await self._producer.start()
+        if self.settings.ingestion_source == "opcua" or self.settings.plant_connect:
+            from app.ingestion.opcua_session import get_plant_session
+
+            await get_plant_session(self.settings).connect()
         logger.info(
-            "Producer started → %s topic=%s rate=%.2f Hz plants=%s source=%s",
+            "Producer started → %s topic=%s rate=%.2f Hz plants=%s source=%s plant_connect=%s",
             self.settings.kafka_bootstrap_servers,
             self.settings.kafka_sensor_topic,
             self.settings.ingestion_rate_hz,
             self.settings.producer_plant_code_list,
             self.settings.ingestion_source,
+            self.settings.plant_connect,
         )
 
     async def stop(self) -> None:
@@ -43,6 +48,12 @@ class SensorProducer:
         if self._producer is not None:
             await self._producer.stop()
             self._producer = None
+        try:
+            from app.ingestion.opcua_session import close_plant_session
+
+            await close_plant_session()
+        except Exception:  # noqa: BLE001
+            logger.exception("OPC session close failed")
 
     async def publish(self, payload: dict[str, Any]) -> None:
         assert self._producer is not None

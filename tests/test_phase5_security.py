@@ -90,3 +90,15 @@ def test_security_headers_present():
     r = client.get("/livez")
     assert r.headers.get("x-content-type-options") == "nosniff"
     assert r.headers.get("x-frame-options") == "DENY"
+    csp = r.headers.get("content-security-policy", "")
+    assert "default-src 'self'" in csp
+    assert "frame-ancestors 'none'" in csp
+
+
+def test_dashboard_static_assets_served():
+    page = client.get("/dashboard")
+    assert page.status_code == 200
+    assert "/static/dashboard.css" in page.text
+    assert "/static/dashboard.js" in page.text
+    assert client.get("/static/dashboard.css").status_code == 200
+    assert client.get("/static/dashboard.js").status_code == 200

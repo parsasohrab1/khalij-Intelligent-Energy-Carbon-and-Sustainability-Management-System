@@ -1,0 +1,16 @@
+version: default
+# E8 — affine calibration on SRS physics formulas (scale * physics + offset)
+# Fit via training pipeline or POST /api/v1/ml/calibrate
+plants:
+  olefin:
+    energy_scale: 1.0
+    energy_offset: 0.0
+    carbon_scale: 1.0
+    carbon_offset: 0.0
+    version: default
+  pta:
+    energy_scale: 1.0
+    energy_offset: 0.0
+    carbon_scale: 1.0
+    carbon_offset: 0.0
+    version: default

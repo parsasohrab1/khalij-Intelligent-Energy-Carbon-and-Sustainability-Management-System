@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="iEMS">
+  <rect width="128" height="128" fill="#0c241c"/>
+  <rect x="0" y="0" width="128" height="36" fill="#7cbf4a"/>
+  <text x="64" y="26" text-anchor="middle" fill="#fff" font-family="Tahoma,sans-serif" font-size="18" font-weight="700">iEMS</text>
+  <polyline points="18,88 40,70 58,78 78,52 110,60" fill="none" stroke="#9ad46a" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

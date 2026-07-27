@@ -25,6 +25,35 @@ class Settings(BaseSettings):
     auth_token_ttl_seconds: int = 3600
     cors_origins: str = "*"
 
+    # E11 — Enterprise Ops / IdP (OIDC)
+    oidc_enabled: bool = False
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_uri: str = "http://localhost:8000/api/v1/auth/oidc/callback"
+    oidc_scopes: str = "openid profile email"
+    oidc_role_claim: str = "roles"
+    oidc_admin_roles: str = "iems-admin,admin"
+    oidc_operator_roles: str = "iems-operator,operator"
+    oidc_viewer_roles: str = "iems-viewer,viewer"
+    oidc_dev_bypass: bool = False  # POST /auth/oidc/dev-login when APP_DEBUG
+
+    # E11 — multi-site
+    site_code: str = "khalij"
+    site_name: str = "Khalij Complex"
+
+    # Demo / sales mode (Kafka-less live stream)
+    demo_feeder: bool = False
+    demo_memory_only: bool = False
+    demo_prefer_memory: bool = False
+
+    # E6 — Plant Connect (OPC-UA primary; disables demo memory fallback)
+    plant_connect: bool = False
+    opc_ua_username: str = ""
+    opc_ua_password: str = ""
+    opc_ua_use_subscription: bool = True
+    opc_ua_allow_uncertain: bool = True
+
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_user: str = "iems"
@@ -58,11 +87,14 @@ class Settings(BaseSettings):
 
     # Phase 2 — carbon & sustainability
     carbon_factors_path: str = "infra/carbon/emission_factors.yaml"
+    carbon_scope3_path: str = "infra/carbon/scope3_factors.yaml"
     carbon_reports_export_dir: str = "data/reports/carbon"
+    carbon_esg_pack_dir: str = "data/reports/esg_packs"
     carbon_market_staging_dir: str = "data/reports/carbon_market"
     carbon_market_registry_name: str = "khalij-carbon-registry"
     carbon_market_api_url: str = ""
     carbon_market_api_token: str = ""
+    carbon_market_require_locked: bool = True
     carbon_report_interval_seconds: int = 300
     carbon_report_completed_only: bool = False  # False = demo-friendly current period
 
@@ -84,6 +116,27 @@ class Settings(BaseSettings):
     ml_mape_target: float = 5.0
     ml_max_latency_ms: float = 3000.0
     ml_retrain_interval_seconds: int = 3600
+
+    # E8 — Trusted Models
+    ml_trusted_mode: bool = False
+    ml_allow_synthetic: bool = True
+    ml_allow_physics_fallback: bool = True
+    ml_allow_vsg_in_trusted: bool = False
+    ml_holdout_ratio: float = 0.2
+    ml_drift_psi_threshold: float = 0.2
+    ml_physics_scale_path: str = "infra/ml/physics_calibration.yaml"
+    ml_prefer_torch_lstm: bool = False
+
+    # E9 — Advisory → Action (setpoint apply)
+    opc_write_enabled: bool = False
+    opc_write_dry_run_default: bool = True
+    opt_require_sim_before_apply: bool = True
+    opt_impact_window_minutes: int = 15
+    opt_writable_fields: str = "reactor_temp_c,feed_flow_tonh"
+
+    @property
+    def writable_field_list(self) -> list[str]:
+        return [c.strip() for c in self.opt_writable_fields.split(",") if c.strip()]
 
     @property
     def database_url(self) -> str:
@@ -112,6 +165,31 @@ class Settings(BaseSettings):
     @property
     def producer_plant_code_list(self) -> list[str]:
         return [c.strip() for c in self.producer_plant_codes.split(",") if c.strip()]
+
+    @property
+    def plant_connect_active(self) -> bool:
+        """True when plant path must not fall back to demo memory/simulator soft-fail."""
+        return bool(self.plant_connect)
+
+    @property
+    def trusted_mode_active(self) -> bool:
+        """E8 — plant connect or explicit ML trusted mode."""
+        return bool(self.plant_connect or self.ml_trusted_mode)
+
+    def allow_demo_memory(self) -> bool:
+        if self.plant_connect:
+            return False
+        return bool(self.demo_prefer_memory or self.demo_memory_only or self.demo_feeder)
+
+    def allow_ml_synthetic(self) -> bool:
+        if self.trusted_mode_active:
+            return False
+        return bool(self.ml_allow_synthetic)
+
+    def allow_ml_physics_fallback(self) -> bool:
+        if self.trusted_mode_active:
+            return False
+        return bool(self.ml_allow_physics_fallback)
 
 
 @lru_cache

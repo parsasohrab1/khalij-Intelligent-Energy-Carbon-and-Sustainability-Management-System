@@ -42,12 +42,14 @@ data/raw/*
 data/processed/*
 data/reports/carbon/*
 data/reports/carbon_market/*
+data/reports/esg_packs/*
 data/models/*
 data/backups/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/reports/carbon/.gitkeep
 !data/reports/carbon_market/.gitkeep
+!data/reports/esg_packs/.gitkeep
 !data/models/.gitkeep
 !data/backups/.gitkeep
 mlruns/

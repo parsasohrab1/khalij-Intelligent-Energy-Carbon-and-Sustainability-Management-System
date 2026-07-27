@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#7cbf4a" />
+  <meta name="description" content="Khalij iEMS operator console" />
+  <link rel="manifest" href="/static/manifest.webmanifest" />
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
+  <title>Khalij iEMS — Operator Console</title>
+  <link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="side-brand">
+        <strong>Khalij iEMS</strong>
+        <small>Operator Product · E7</small>
+      </div>
+
+      <nav class="nav">
+        <p class="nav-group-title">MONITOR</p>
+        <button type="button" class="active" data-view="live" data-require="read">display</button>
+        <button type="button" data-view="notifications" data-require="read" id="navNotifications">
+          Notifications <span class="badge hidden" id="notifBadge">0</span>
+        </button>
+
+        <p class="nav-group-title">AI / OPT</p>
+        <button type="button" data-view="predict" data-require="predict">Graph_Analysis</button>
+        <button type="button" data-view="optimize" data-require="operate">Control</button>
+
+        <p class="nav-group-title">SUSTAIN</p>
+        <button type="button" data-view="carbon" data-require="read">Reporting</button>
+
+        <p class="nav-group-title">SYSTEM</p>
+        <button type="button" data-view="auth" data-require="read">Connection</button>
+      </nav>
+
+      <div class="side-bottom">
+        <div class="side-live">
+          <div class="top">
+            <span>Power</span>
+            <span class="val"><span id="sidePower">—</span><small>MW</small></span>
+          </div>
+          <canvas id="sideSpark" width="180" height="40"></canvas>
+        </div>
+        <div class="stream"><i class="dot" id="statusDot"></i><span id="statusText">connecting…</span></div>
+        <div class="side-user">
+          <span id="authChip">guest</span>
+          <span class="mono" id="clock">--:--:--</span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <div class="topbar">
+        <button type="button" class="menu-toggle" id="menuToggle">MENU</button>
+
+        <div class="subtabs" id="mainTabs">
+          <button type="button" class="active" data-view-tab="live" data-mode="carriers">Gauge</button>
+          <button type="button" data-view-tab="live" data-mode="intensity">SENSOR</button>
+          <button type="button" data-view-tab="live" data-sub="realtime">REAL_TIME_M</button>
+          <button type="button" data-view-tab="notifications" id="tabNotifications">Notifications</button>
+        </div>
+
+        <div class="filters">
+          <label>System
+            <select id="plant">
+              <option value="olefin">Olefin</option>
+              <option value="pta">PTA</option>
+            </select>
+          </label>
+          <label>Gauge_parameter
+            <select id="gaugeParam">
+              <option value="power">electricity_MW</option>
+              <option value="fuel">fuel_gas</option>
+              <option value="steam">steam</option>
+              <option value="feed">feed</option>
+            </select>
+          </label>
+          <label>sensor_parameter
+            <select id="sensorParam">
+              <option value="intensity">energy_intensity</option>
+              <option value="carbon">carbon_intensity</option>
+              <option value="efficiency">efficiency_%</option>
+            </select>
+          </label>
+          <button type="button" class="btn" id="refreshBtn">Refresh</button>
+          <button type="button" class="btn" id="btnShiftCsv">Shift CSV</button>
+        </div>
+      </div>
+
+      <div class="content">
+        <div class="toast error" id="errorBox"></div>
+        <div class="toast ok" id="okBox"></div>
+        <div class="toast warn hidden" id="notifToast"></div>
+
+        <section class="view active" id="view-live">
+          <div class="section-bar" id="pageTitle">Graph · REAL_TIME</div>
+
+          <div class="shift-strip card" id="shiftStrip">
+            <div class="row mb">
+              <strong>Shift briefing</strong>
+              <button type="button" class="btn btn-sm" id="btnShiftSummary">Load briefing</button>
+            </div>
+            <ul class="checklist" id="shiftChecklist">
+              <li>Confirm live stream status is ok</li>
+              <li>Acknowledge critical notifications</li>
+              <li>Review optimization recommendations</li>
+              <li>Export daily carbon CSV if required</li>
+            </ul>
+            <p class="hint" id="shiftMeta">Operator daily path — no /docs needed</p>
+          </div>
+
+          <div class="kpis">
+            <div class="kpi kpi-plant">
+              <div class="lbl">واحد</div>
+              <div class="num plant-name"><span id="vPlant">—</span></div>
+            </div>
+            <div class="kpi"><div class="lbl">Electricity</div><div class="num"><span id="vPower">—</span><span class="unit">MW</span></div></div>
+            <div class="kpi"><div class="lbl">Fuel Gas</div><div class="num"><span id="vFuel">—</span><span class="unit">kNm³/h</span></div></div>
+            <div class="kpi"><div class="lbl">Steam</div><div class="num"><span id="vSteam">—</span><span class="unit">t/h</span></div></div>
+            <div class="kpi"><div class="lbl">Feed</div><div class="num"><span id="vFeed">—</span><span class="unit">t/h</span></div></div>
+          </div>
+
+          <div class="chart-panel">
+            <div class="head">
+              <h2 id="chartTitle">Energy Signal</h2>
+              <span class="chart-meta"><span id="asOf">—</span> · <span id="age">—</span> · <span id="efficiency">—</span></span>
+            </div>
+            <canvas id="chartMain" width="1000" height="280"></canvas>
+            <div class="legend" id="chartLegend"></div>
+          </div>
+
+          <div class="grid-2">
+            <div class="chart-panel">
+              <div class="head"><h2>Process Efficiency</h2><span class="chart-meta" id="headerMeta">—</span></div>
+              <canvas id="chartGauge" width="480" height="180"></canvas>
+            </div>
+            <div class="chart-panel">
+              <div class="head"><h2>Scope Histogram</h2></div>
+              <canvas id="chartHist" width="480" height="180"></canvas>
+              <canvas id="chartScopes" class="sr-only" width="1" height="1"></canvas>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-notifications">
+          <div class="section-bar">Notifications · live poll 20s</div>
+          <div class="card">
+            <div class="row mb">
+              <button class="btn btn-primary" type="button" id="loadNotifications">Refresh now</button>
+              <button class="btn" type="button" id="refreshNotifications">Force poll</button>
+              <span class="hint" id="notificationsMeta">severity: critical / warning / info</span>
+            </div>
+            <table>
+              <thead><tr><th>Sev</th><th>ID</th><th>Unit</th><th>Type</th><th>Message</th><th>Action</th></tr></thead>
+              <tbody id="notificationsBody"><tr><td colspan="6">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="view" id="view-predict">
+          <div class="section-bar">Graph_Analysis · Predict</div>
+          <div class="card" data-require="predict">
+            <div class="row">
+              <button class="btn btn-primary" type="button" id="btnPredict" data-require="predict">Predict 60m</button>
+              <button class="btn" type="button" id="btnTrain" data-require="train">Train</button>
+              <button class="btn" type="button" id="btnWhatIf" data-require="predict">What-if</button>
+            </div>
+            <div class="form-grid">
+              <label>Model<select id="modelSel"><option>elm</option><option>lstm</option></select></label>
+              <label>ΔT reactor (°C)<input id="wiTemp" type="number" value="5" step="0.5" /></label>
+              <label>Δ Feed (t/h)<input id="wiFeed" type="number" value="-2" step="0.5" /></label>
+            </div>
+            <pre class="out" id="predictOut">API response…</pre>
+          </div>
+        </section>
+
+        <section class="view" id="view-optimize">
+          <div class="section-bar">Control · Optimization · E9 Action</div>
+          <div class="card" data-require="operate">
+            <div class="row">
+              <button class="btn btn-primary" type="button" id="btnAnalyze" data-require="operate">Analyze savings</button>
+              <button class="btn" type="button" id="btnRecs" data-require="operate">List recommendations</button>
+            </div>
+            <p class="muted" style="margin:8px 0 4px;font-size:12px">Flow: accept → approve → apply (admin, dry-run default) → impact</p>
+            <pre class="out" id="optOut">API response…</pre>
+            <table>
+              <thead><tr><th>ID</th><th>Status</th><th>Title</th><th>Current → Proposed</th><th>Saving</th><th>Action</th></tr></thead>
+              <tbody id="recsBody"><tr><td colspan="6">—</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="view" id="view-carbon">
+          <div class="section-bar">Reporting · Carbon · E10 ESG</div>
+          <div class="card">
+            <div class="row mb">
+              <button class="btn btn-primary" type="button" id="btnScopes" data-require="read">Live scopes</button>
+              <button class="btn" type="button" id="btnGenReport" data-require="operate">Daily report</button>
+              <button class="btn" type="button" id="btnListReports" data-require="read">List reports</button>
+              <button class="btn" type="button" id="btnMarket" data-require="operate">Market sync</button>
+              <button class="btn" type="button" id="btnMarketHist" data-require="read">Sync history</button>
+            </div>
+            <p class="muted" style="margin:0 0 8px;font-size:12px">Assurance: submit → approve → lock (admin) · ESG pack = HTML/CSV for audit (not raw JSON)</p>
+            <pre class="out" id="carbonOut">API response…</pre>
+            <table>
+              <thead><tr><th>ID</th><th>Plant</th><th>Period</th><th>S1</th><th>S2</th><th>S3</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody id="reportsBody"><tr><td colspan="8">List reports to populate</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="view" id="view-auth">
+          <div class="section-bar">Connection · Auth</div>
+          <div class="card">
+            <div class="form-grid">
+              <label>User<input id="user" value="operator" /></label>
+              <label>Password<input id="pass" type="password" value="operator" /></label>
+              <label>TOTP<input id="totp" placeholder="admin settings only" /></label>
+            </div>
+            <div class="row">
+              <button class="btn btn-primary" type="button" id="btnLogin">Login</button>
+              <button class="btn" type="button" id="btnLogout">Logout</button>
+              <button class="btn" type="button" id="btnPatchSettings" data-require="settings">PATCH /settings</button>
+              <button class="btn" type="button" id="btnMe">Who am I</button>
+            </div>
+            <p class="hint">Shift login: operator/operator · viewer/viewer · admin/admin — TOTP: JBSWY3DPEHPK3PXP</p>
+            <pre class="out" id="authOut">Token stored in localStorage. Role gates Predict/Control/Settings.</pre>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>

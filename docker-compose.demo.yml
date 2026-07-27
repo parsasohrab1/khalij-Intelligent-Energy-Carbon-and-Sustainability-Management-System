@@ -1,0 +1,83 @@
+# Lightweight demo stack — no Kafka/MLflow (sales & local UI demos)
+# Usage: docker compose -f docker-compose.demo.yml up -d --build
+# Dashboard: http://localhost:8000/dashboard
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: iems-demo-api
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      APP_ENV: development
+      APP_DEBUG: "true"
+      SECRET_KEY: ${SECRET_KEY:-dev-secret}
+      POSTGRES_HOST: timescaledb
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-iems}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iems_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-iems}
+      REDIS_HOST: redis
+      DEMO_FEEDER: "true"
+      DEMO_PREFER_MEMORY: "true"
+      DEMO_MEMORY_ONLY: "false"
+      PRODUCER_PLANT_CODES: olefin,pta
+      INGESTION_RATE_HZ: "1.0"
+      AUTH_ENFORCE: "false"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+      - ./infra:/app/infra
+      - ./data:/app/data
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - iems
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: iems-demo-timescaledb
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-iems}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iems_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-iems}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - demo_ts_data:/var/lib/postgresql/data
+      - ./infra/db/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./infra/db/migrate_phase1.sql:/docker-entrypoint-initdb.d/02_phase1.sql:ro
+      - ./infra/db/migrate_phase2.sql:/docker-entrypoint-initdb.d/03_phase2.sql:ro
+      - ./infra/db/migrate_phase4.sql:/docker-entrypoint-initdb.d/04_phase4.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iems} -d ${POSTGRES_DB:-iems}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - iems
+
+  redis:
+    image: redis:7-alpine
+    container_name: iems-demo-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - iems
+
+volumes:
+  demo_ts_data:
+
+networks:
+  iems:
+    driver: bridge

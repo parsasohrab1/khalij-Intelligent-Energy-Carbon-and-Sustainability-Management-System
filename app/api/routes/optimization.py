@@ -1,4 +1,4 @@
-"""FR-OPT-01 / FR-OPT-02 — optimization, simulation, operator feedback."""
+"""FR-OPT-01 / FR-OPT-02 / E9 — optimization, simulation, approve, apply, impact."""
 
 from __future__ import annotations
 
@@ -9,24 +9,37 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_action
 from app.db.session import get_db
+from app.optimization.apply import (
+    ActionWorkflowError,
+    apply_recommendation,
+    approve_recommendation,
+    measure_impact,
+)
 from app.optimization.engine import advice_to_text, build_structured_advice, classify_units
 from app.optimization.simulate import simulate_advice
 from app.optimization.snapshots import load_unit_states
 from app.optimization.store import (
     get_recommendation,
+    list_audit_events,
     list_recommendations,
     persist_recommendations,
     submit_feedback,
 )
 from app.schemas import (
     AdviceSimulationOut,
+    ApplyOut,
+    ApplyRequest,
+    ApproveRequest,
+    AuditEventOut,
     FeedbackOut,
     FeedbackRequest,
+    ImpactOut,
     OptimizationRequest,
     OptimizationResponse,
     SetpointAdviceOut,
     UnitEfficiencyOut,
 )
+from app.services.auth import CurrentUser
 
 router = APIRouter(prefix="/optimization", tags=["optimization"])
 
@@ -52,6 +65,31 @@ def _advice_out(advice, row_id: int | None = None, sim=None, status_value: str =
     )
 
 
+def _row_to_advice(r) -> SetpointAdviceOut:
+    return SetpointAdviceOut(
+        id=r.id,
+        plant_code=r.plant_code,
+        priority=r.priority,  # type: ignore[arg-type]
+        title=r.title,
+        rationale=r.rationale,
+        current=json.loads(r.current_json),
+        proposed=json.loads(r.proposed_json),
+        deltas=json.loads(r.deltas_json),
+        tags=json.loads(r.tags_json or "[]"),
+        benchmark_plant=r.benchmark_plant,
+        estimated_sec_reduction_pct=r.estimated_sec_reduction_pct or 0,
+        estimated_energy_saving_kwh_per_h=r.estimated_energy_saving_kwh_per_h or 0,
+        estimated_efficiency_gain_pp=r.estimated_efficiency_gain_pp or 0,
+        simulated_intensity_delta=r.simulated_intensity_delta,
+        simulated_efficiency_delta_pp=r.simulated_efficiency_delta_pp,
+        status=r.status,
+        apply_mode=getattr(r, "apply_mode", None),
+        realized_saving_kwh_per_h=getattr(r, "realized_saving_kwh_per_h", None),
+        approved_by=getattr(r, "approved_by", None),
+        applied_by=getattr(r, "applied_by", None),
+    )
+
+
 @router.post("/analyze", response_model=OptimizationResponse)
 async def analyze(
     body: OptimizationRequest,
@@ -59,7 +97,6 @@ async def analyze(
     _user=Depends(require_action("operate")),
 ) -> OptimizationResponse:
     states = await load_unit_states(db, body.plant_codes)
-    # If DB returned identical-ish single-source states, still allow multi-unit demo nudge
     if len({(s.energy_efficiency_percent, s.energy_intensity_kgoe_ton) for s in states}) == 1 and len(states) > 1:
         states = await load_unit_states(None, body.plant_codes)
 
@@ -136,29 +173,7 @@ async def get_recommendations(
     rows = await list_recommendations(
         db, plant_code=plant_code, status=status_filter, limit=limit
     )
-    out: list[SetpointAdviceOut] = []
-    for r in rows:
-        out.append(
-            SetpointAdviceOut(
-                id=r.id,
-                plant_code=r.plant_code,
-                priority=r.priority,  # type: ignore[arg-type]
-                title=r.title,
-                rationale=r.rationale,
-                current=json.loads(r.current_json),
-                proposed=json.loads(r.proposed_json),
-                deltas=json.loads(r.deltas_json),
-                tags=json.loads(r.tags_json or "[]"),
-                benchmark_plant=r.benchmark_plant,
-                estimated_sec_reduction_pct=r.estimated_sec_reduction_pct or 0,
-                estimated_energy_saving_kwh_per_h=r.estimated_energy_saving_kwh_per_h or 0,
-                estimated_efficiency_gain_pp=r.estimated_efficiency_gain_pp or 0,
-                simulated_intensity_delta=r.simulated_intensity_delta,
-                simulated_efficiency_delta_pp=r.simulated_efficiency_delta_pp,
-                status=r.status,
-            )
-        )
-    return out
+    return [_row_to_advice(r) for r in rows]
 
 
 @router.post("/recommendations/{recommendation_id}/simulate", response_model=AdviceSimulationOut)
@@ -235,3 +250,108 @@ async def feedback_recommendation(
         status=rec.status,
         created_at=fb.created_at,
     )
+
+
+@router.post("/recommendations/{recommendation_id}/approve", response_model=SetpointAdviceOut)
+async def approve(
+    recommendation_id: int,
+    body: ApproveRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_action("operate")),
+) -> SetpointAdviceOut:
+    try:
+        rec = await approve_recommendation(
+            db,
+            recommendation_id=recommendation_id,
+            actor=user.username,
+            comment=(body.comment if body else None),
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Recommendation not found") from None
+    except ActionWorkflowError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return _row_to_advice(rec)
+
+
+@router.post("/recommendations/{recommendation_id}/apply", response_model=ApplyOut)
+async def apply(
+    recommendation_id: int,
+    body: ApplyRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_action("apply")),
+) -> ApplyOut:
+    try:
+        outcome = await apply_recommendation(
+            db,
+            recommendation_id=recommendation_id,
+            actor=user.username,
+            dry_run=body.dry_run if body else None,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Recommendation not found") from None
+    except ActionWorkflowError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return ApplyOut(
+        recommendation_id=outcome.recommendation_id,
+        status=outcome.status,
+        apply_mode=outcome.apply_mode,
+        dry_run=outcome.dry_run,
+        planned=outcome.planned,
+        written=outcome.written,
+        skipped=outcome.skipped,
+        detail=outcome.detail,
+        baseline_intensity=outcome.baseline_intensity,
+        baseline_efficiency=outcome.baseline_efficiency,
+    )
+
+
+@router.get("/recommendations/{recommendation_id}/impact", response_model=ImpactOut)
+async def impact(
+    recommendation_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_action("operate")),
+) -> ImpactOut:
+    try:
+        out = await measure_impact(
+            db, recommendation_id=recommendation_id, actor=user.username
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Recommendation not found") from None
+    except ActionWorkflowError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return ImpactOut(
+        recommendation_id=out.recommendation_id,
+        plant_code=out.plant_code,
+        status=out.status,
+        baseline_intensity=out.baseline_intensity,
+        current_intensity=out.current_intensity,
+        baseline_efficiency=out.baseline_efficiency,
+        current_efficiency=out.current_efficiency,
+        estimated_saving_kwh_per_h=out.estimated_saving_kwh_per_h,
+        realized_saving_kwh_per_h=out.realized_saving_kwh_per_h,
+        window_minutes=out.window_minutes,
+        samples=out.samples,
+        detail=out.detail,
+    )
+
+
+@router.get("/recommendations/{recommendation_id}/audit", response_model=list[AuditEventOut])
+async def audit(
+    recommendation_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> list[AuditEventOut]:
+    rec = await get_recommendation(db, recommendation_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    events = await list_audit_events(db, recommendation_id)
+    return [
+        AuditEventOut(
+            id=e.id,
+            recommendation_id=e.recommendation_id,
+            event_type=e.event_type,
+            actor=e.actor,
+            detail=json.loads(e.detail_json or "{}"),
+            created_at=e.created_at,
+        )
+        for e in events
+    ]

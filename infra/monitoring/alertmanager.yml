@@ -7,9 +7,20 @@ route:
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
+  routes:
+    - match:
+        severity: critical
+      receiver: oncall
+      continue: true
 
 receivers:
+  # E11 — replace webhook URLs for real 24×7 on-call (Slack/PagerDuty/Opsgenie).
+  # Or mount an override: infra/monitoring/alertmanager.oncall.yml
   - name: default
+    webhook_configs:
+      - url: http://127.0.0.1:5001/
+        send_resolved: true
+  - name: oncall
     webhook_configs:
       - url: http://127.0.0.1:5001/
         send_resolved: true

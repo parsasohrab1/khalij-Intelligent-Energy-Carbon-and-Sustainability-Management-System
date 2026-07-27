@@ -1,4 +1,4 @@
-"""Serve ELM/LSTM predictions with latency + MAPE tracking (FR-ML-02/03)."""
+"""Serve ELM/LSTM predictions with latency + MAPE tracking (FR-ML-02/03, E8)."""
 
 from __future__ import annotations
 
@@ -20,6 +20,10 @@ from app.services.physics import carbon_emission_intensity, energy_efficiency, e
 ModelKind = Literal["elm", "lstm"]
 
 
+class ModelUnavailableError(RuntimeError):
+    """Raised when trusted mode has no registered model / physics blocked."""
+
+
 @dataclass
 class PredictionResult:
     predicted_energy_kwh: float
@@ -29,12 +33,31 @@ class PredictionResult:
     model: str
     model_version: str | None
     latency_ms: float
-    mape_estimate: float
+    mape_estimate: float | None
     source: str  # ml_model | physics_fallback
+    trusted: bool = False
+    drift_alert: bool | None = None
 
 
 def _features_from_kwargs(**kwargs: float) -> np.ndarray:
     return np.array([[float(kwargs[c]) for c in FEATURE_COLUMNS]], dtype=float)
+
+
+def _matrix_from_history(rows: list[Any], fallback: dict[str, float]) -> np.ndarray:
+    if not rows:
+        return _features_from_kwargs(**fallback)
+    mat = []
+    for r in rows:
+        mat.append(
+            [
+                float(getattr(r, "electricity_power_mw", None) or fallback["electricity_power_mw"]),
+                float(getattr(r, "fuel_gas_flow_km3h", None) or fallback["fuel_gas_flow_km3h"]),
+                float(getattr(r, "steam_flow_tonh", None) or fallback["steam_flow_tonh"]),
+                float(getattr(r, "feed_flow_tonh", None) or fallback["feed_flow_tonh"]),
+                float(getattr(r, "reactor_temp_c", None) or fallback["reactor_temp_c"]),
+            ]
+        )
+    return np.asarray(mat, dtype=float)
 
 
 async def resolve_features(
@@ -72,16 +95,23 @@ def predict_with_model(
     model: ModelKind = "elm",
     plant_code: str = "olefin",
     settings: Settings | None = None,
+    feature_matrix: np.ndarray | None = None,
 ) -> PredictionResult:
     cfg = settings or get_settings()
+    trusted = cfg.trusted_mode_active
     started = time.perf_counter()
     registered = load_latest(model, plant_code, cfg)
 
     if registered is not None:
-        X = _features_from_kwargs(**features)
-        pred = registered.model.predict(X)[0]
-        intensity = float(pred[0])
-        carbon_int = float(pred[1]) if len(pred) > 1 else carbon_emission_intensity(
+        if feature_matrix is not None and len(feature_matrix) > 0:
+            X = np.asarray(feature_matrix, dtype=float)
+        else:
+            X = _features_from_kwargs(**features)
+        pred = registered.model.predict(X)
+        # last window prediction when sequence
+        row = pred[-1] if getattr(pred, "ndim", 1) == 2 else pred[0]
+        intensity = float(row[0])
+        carbon_int = float(row[1]) if len(row) > 1 else carbon_emission_intensity(
             features["fuel_gas_flow_km3h"],
             features["steam_flow_tonh"],
             features["electricity_power_mw"],
@@ -102,9 +132,16 @@ def predict_with_model(
             latency_ms=round(latency_ms, 3),
             mape_estimate=round(registered.mape, 3),
             source="ml_model",
+            trusted=trusted,
         )
 
-    # Physics fallback until a model is trained
+    if not cfg.allow_ml_physics_fallback():
+        raise ModelUnavailableError(
+            f"No registered {model} model for '{plant_code}' and physics fallback "
+            "is disabled in trusted mode"
+        )
+
+    # Physics fallback (demo / non-trusted only) — no invented MAPE claim
     intensity = energy_intensity(
         features["fuel_gas_flow_km3h"],
         features["steam_flow_tonh"],
@@ -127,13 +164,7 @@ def predict_with_model(
         features["steam_flow_tonh"],
         features["electricity_power_mw"],
     )
-    if model == "lstm":
-        energy_kwh *= 0.98
-        carbon_total = scopes.total_kgco2 * 0.98
-        mape = 4.5
-    else:
-        carbon_total = scopes.total_kgco2
-        mape = 4.8
+    carbon_total = scopes.total_kgco2
     latency_ms = (time.perf_counter() - started) * 1000.0
     return PredictionResult(
         predicted_energy_kwh=round(energy_kwh, 2),
@@ -143,8 +174,41 @@ def predict_with_model(
         model=model,
         model_version=None,
         latency_ms=round(latency_ms, 3),
-        mape_estimate=mape,
+        mape_estimate=None,
         source="physics_fallback",
+        trusted=False,
+    )
+
+
+async def predict_for_plant(
+    session: AsyncSession | None,
+    *,
+    plant_code: str,
+    horizon_minutes: int = 60,
+    model: ModelKind = "elm",
+    settings: Settings | None = None,
+    overrides: dict[str, float] | None = None,
+) -> PredictionResult:
+    """Resolve live features (+ history for LSTM) then predict."""
+    cfg = settings or get_settings()
+    features = await resolve_features(session, plant_code, overrides)
+    feature_matrix = None
+    if model == "lstm" and session is not None:
+        lookback = max(cfg.ml_lstm_lookback, 2)
+        # ~1 Hz → minutes ≈ lookback/60; request extra headroom
+        minutes = max(2, (lookback // 30) + 2)
+        history = await sensor_repo.get_history(
+            session, plant_code, minutes=minutes, limit=lookback * 2
+        )
+        if history:
+            feature_matrix = _matrix_from_history(history[-lookback:], features)
+    return predict_with_model(
+        features=features,
+        horizon_minutes=horizon_minutes,
+        model=model,
+        plant_code=plant_code,
+        settings=cfg,
+        feature_matrix=feature_matrix,
     )
 
 

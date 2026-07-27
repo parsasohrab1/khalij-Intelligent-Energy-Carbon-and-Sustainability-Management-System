@@ -30,34 +30,63 @@ class ModelTrainer:
         await self._engine.dispose()
 
     async def run_once(self) -> dict[str, object]:
+        from app.ml.train import TrustedDataError, evaluate_drift
+
         results: dict[str, object] = {}
         async with self._session_factory() as session:
             for plant in self.settings.unit_code_list:
                 for kind in ("elm", "lstm"):
+                    key = f"{plant}:{kind}"
                     try:
+                        if self.settings.trusted_mode_active:
+                            drift = await evaluate_drift(
+                                session,
+                                plant_code=plant,
+                                kind=kind,  # type: ignore[arg-type]
+                                settings=self.settings,
+                            )
+                            if drift.get("status") == "ok" and not drift.get("drift_alert"):
+                                results[key] = {
+                                    "skipped": True,
+                                    "reason": "no_drift",
+                                    "max_psi": drift.get("max_psi"),
+                                }
+                                logger.info(
+                                    "Skip retrain %s/%s — no drift (max_psi=%s)",
+                                    plant,
+                                    kind,
+                                    drift.get("max_psi"),
+                                )
+                                continue
                         outcome = await train_model(
                             kind=kind,  # type: ignore[arg-type]
                             plant_code=plant,
                             session=session,
                             settings=self.settings,
                         )
-                        results[f"{plant}:{kind}"] = {
+                        results[key] = {
                             "mape": outcome.mape,
                             "meets_target": outcome.meets_mape_target,
                             "version": outcome.registered.version,
                             "source": outcome.data_source,
+                            "trusted": outcome.trusted,
+                            "holdout_temporal": outcome.holdout_temporal,
                         }
                         logger.info(
-                            "Trained %s/%s mape=%.3f target_ok=%s version=%s",
+                            "Trained %s/%s mape=%.3f target_ok=%s version=%s trusted=%s",
                             plant,
                             kind,
                             outcome.mape,
                             outcome.meets_mape_target,
                             outcome.registered.version,
+                            outcome.trusted,
                         )
+                    except TrustedDataError as exc:
+                        logger.error("Trusted train blocked for %s/%s: %s", plant, kind, exc)
+                        results[key] = {"error": True, "trusted_blocked": True, "detail": str(exc)}
                     except Exception:
                         logger.exception("Training failed for %s/%s", plant, kind)
-                        results[f"{plant}:{kind}"] = {"error": True}
+                        results[key] = {"error": True}
         return results
 
     async def run_forever(self) -> None:
