@@ -202,6 +202,17 @@
             <div class="kpi"><div class="lbl">Est. saving</div><div class="num"><span id="optSave">—</span><span class="unit">kWh/h</span></div></div>
             <div class="kpi"><div class="lbl">Advice</div><div class="num"><span id="optCount">—</span></div></div>
           </div>
+          <div class="card mb" id="rtoPanel">
+            <div class="row mb">
+              <strong>Real-Time Optimization (RTO) · live</strong>
+              <span class="hint" id="rtoMeta">computing…</span>
+            </div>
+            <p class="muted" style="margin:0 0 8px;font-size:12px">Recomputed every cycle from the live stream · advisory-only, auto-queued below for accept → approve → apply</p>
+            <table>
+              <thead><tr><th>Unit</th><th>Tier</th><th>Efficiency / intensity</th><th>Live target</th><th>Est. saving</th></tr></thead>
+              <tbody id="rtoBody"><tr><td colspan="5">Loading…</td></tr></tbody>
+            </table>
+          </div>
           <div class="card" data-require="operate">
             <div class="row">
               <button class="btn btn-primary" type="button" id="btnAnalyze" data-require="operate">Analyze savings</button>

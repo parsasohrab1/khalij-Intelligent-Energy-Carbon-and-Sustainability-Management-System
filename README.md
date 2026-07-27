@@ -14,6 +14,7 @@ Live operator console: **[/dashboard](http://localhost:8000/dashboard)** · API 
 | Carbon market staging | FR-CAR-02 | `/api/v1/carbon/market/sync` |
 | VSG + ELM/LSTM predict + what-if | FR-ML-01/02/03 | `/api/v1/ml/*` |
 | Savings advice + operator feedback | FR-OPT-01/02 | `/api/v1/optimization/*` |
+| Real-Time Optimization (RTO) | FR-RTO-01 · E12 | Continuous advisory loop, live Control panel, `/api/v1/rto/*` |
 | RBAC + TOTP for settings | NFR-SEC-01 | Auth API + settings 2FA |
 | Monitoring / HA | NFR-REL-01 | Prometheus overlay, k8s, backups |
 | Plant Connect (OPC) | FR-DATA-01 · E6 | Long-lived OPC session, quality codes, `PLANT_CONNECT` |
@@ -40,7 +41,7 @@ docker compose -f docker-compose.demo.yml up -d --build
 
 ```bash
 make install
-make up                 # API + Kafka producer/consumer + DB + Redis + MLflow
+make up                 # API + Kafka producer/consumer + DB + Redis + MLflow + RTO/carbon schedulers
 make up-monitoring      # Prometheus / Grafana / Alertmanager + DB backup
 make up-prod            # AUTH_ENFORCE + monitoring
 make up-ha              # prod + api-b HA profile (:8001)
@@ -68,6 +69,7 @@ TOTP secret (dev): `JBSWY3DPEHPK3PXP`
 | `make demo-feeder` | Standalone 1 Hz DB/memory feeder |
 | `make up-demo` | Lightweight compose (no Kafka) |
 | `make up-prod` / `make up-ha` | AUTH_ENFORCE (+ optional api-b) |
+| `make rto-scheduler` | Standalone E12 Real-Time Optimization advisory loop |
 | `make e11-checklist` | Enterprise Ops cutover |
 | `make backup` / `make restore-dry-run` | DR drill helpers |
 | `make test` | Pytest suite |

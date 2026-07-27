@@ -25,6 +25,7 @@ from app.api.routes import (
     ops,
     optimization,
     prediction,
+    rto,
     settings as settings_routes,
 )
 from app.core.config import get_settings
@@ -38,11 +39,13 @@ _STATIC_DIR = Path(__file__).resolve().parent / "static"
 _DASHBOARD_HTML = _STATIC_DIR / "dashboard.html"
 _feeder_task: asyncio.Task | None = None
 _feeder_worker = None
+_rto_task: asyncio.Task | None = None
+_rto_worker = None
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global _feeder_task, _feeder_worker
+    global _feeder_task, _feeder_worker, _rto_task, _rto_worker
     settings = get_settings()
     try:
         await init_db(settings)
@@ -70,6 +73,17 @@ async def lifespan(_app: FastAPI):
             settings.ingestion_source,
         )
 
+    if settings.rto_enabled and settings.should_run_demo_feeder():
+        from app.rto.scheduler import RTOScheduler
+
+        _rto_worker = RTOScheduler(settings)
+        _rto_task = asyncio.create_task(_rto_worker.run_forever())
+        logger.info(
+            "Inline RTO scheduler started (interval=%ss persist=%ss)",
+            settings.rto_interval_seconds,
+            settings.rto_persist_interval_seconds,
+        )
+
     yield
 
     if _feeder_worker is not None:
@@ -82,6 +96,17 @@ async def lifespan(_app: FastAPI):
         except asyncio.CancelledError:
             pass
         _feeder_task = None
+
+    if _rto_worker is not None:
+        await _rto_worker.stop()
+        _rto_worker = None
+    if _rto_task is not None:
+        _rto_task.cancel()
+        try:
+            await _rto_task
+        except asyncio.CancelledError:
+            pass
+        _rto_task = None
 
     try:
         from app.ingestion.opcua_session import close_plant_session
@@ -132,6 +157,7 @@ def create_app() -> FastAPI:
     application.include_router(alerts.router, prefix="/api/v1", dependencies=read_deps)
     application.include_router(prediction.router, prefix="/api/v1", dependencies=predict_deps)
     application.include_router(optimization.router, prefix="/api/v1", dependencies=write_deps)
+    application.include_router(rto.router, prefix="/api/v1", dependencies=read_deps)
     application.include_router(carbon.router, prefix="/api/v1", dependencies=read_deps)
 
     application.mount(

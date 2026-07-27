@@ -134,6 +134,11 @@ class Settings(BaseSettings):
     opt_impact_window_minutes: int = 15
     opt_writable_fields: str = "reactor_temp_c,feed_flow_tonh"
 
+    # E12 — Real-Time Optimization (RTO): continuous advisory, advisory-only
+    rto_enabled: bool = True
+    rto_interval_seconds: int = 10
+    rto_persist_interval_seconds: int = 120
+
     @property
     def writable_field_list(self) -> list[str]:
         return [c.strip() for c in self.opt_writable_fields.split(",") if c.strip()]

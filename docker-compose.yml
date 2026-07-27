@@ -124,6 +124,34 @@ services:
       - iems
     restart: unless-stopped
 
+  rto-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: iems-rto-scheduler
+    environment:
+      POSTGRES_HOST: timescaledb
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-iems}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iems_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-iems}
+      UNIT_CODES: olefin,pta
+      RTO_ENABLED: "true"
+      RTO_INTERVAL_SECONDS: "10"
+      RTO_PERSIST_INTERVAL_SECONDS: "120"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      consumer:
+        condition: service_started
+    volumes:
+      - ./app:/app/app
+      - ./infra:/app/infra
+    command: python -m app.rto.scheduler
+    networks:
+      - iems
+    restart: unless-stopped
+
   ml-trainer:
     build:
       context: .

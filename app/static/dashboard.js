@@ -22,6 +22,9 @@ let lastPoints = [];
 let lastLive = null;
 let chartMode = "carriers";
 let sensorBoardReady = false;
+let currentView = "live";
+let seededPlant = null;
+const MAX_LIVE_POINTS = 900; // 15 min @ 1 Hz — client-side ring buffer, avoids re-fetching full history every tick
 
 /** All plant sensors shown on SENSOR tab — bands drive green/yellow/red lights. */
 const SENSOR_DEFS = [
@@ -474,16 +477,57 @@ function renderLive(data) {
   }
 }
 
+/** Reshape a /dashboard/energy payload into a history-point-shaped record for local append. */
+function pointFromLive(live) {
+  return {
+    time: live.as_of,
+    electricity_power_mw: live.electricity_power_mw,
+    fuel_gas_flow_km3h: live.fuel_gas_flow_km3h,
+    steam_flow_tonh: live.steam_flow_tonh,
+    feed_flow_tonh: live.feed_flow_tonh,
+    reactor_temp_c: live.reactor_temp_c,
+    pressure_bar: live.pressure_bar,
+    energy_intensity_kgoe_ton: live.energy_intensity_kgoe_ton,
+    carbon_emission_kgco2_ton: live.carbon_emission_kgco2_ton,
+    carbon_intensity_kgco2_ton: live.carbon_intensity_kgco2_ton,
+    energy_efficiency_percent: live.energy_efficiency_percent,
+    scope1_kgco2: live.scope1_kgco2,
+    scope2_kgco2: live.scope2_kgco2,
+  };
+}
+
 async function tickLive() {
   const plant = plantEl.value;
   try {
-    const [live, hist] = await Promise.all([
-      api(`/dashboard/energy?plant_code=${encodeURIComponent(plant)}`),
-      api(`/dashboard/energy/history?plant_code=${encodeURIComponent(plant)}&minutes=15`),
-    ]);
-    lastPoints = hist.points || [];
+    let live;
+    if (plant !== seededPlant || lastPoints.length === 0) {
+      // Plant switched (or first load): seed the 15-min buffer once from the heavy history endpoint.
+      const [liveRes, hist] = await Promise.all([
+        api(`/dashboard/energy?plant_code=${encodeURIComponent(plant)}`),
+        api(`/dashboard/energy/history?plant_code=${encodeURIComponent(plant)}&minutes=15`),
+      ]);
+      live = liveRes;
+      lastPoints = hist.points || [];
+      seededPlant = plant;
+    } else {
+      // Steady state: one lightweight point per tick, appended locally — no full re-fetch.
+      live = await api(`/dashboard/energy?plant_code=${encodeURIComponent(plant)}`);
+      lastPoints.push(pointFromLive(live));
+      if (lastPoints.length > MAX_LIVE_POINTS) lastPoints.shift();
+    }
     renderLive(live);
-    redrawCharts();
+    if (currentView === "live") {
+      redrawCharts();
+    } else {
+      // Off-tab: keep the always-visible sidebar sparkline fresh, skip the heavier canvas repaints.
+      drawSpark(document.getElementById("sideSpark"), lastPoints, "electricity_power_mw", C.spark, 40);
+      if (currentView === "optimize") {
+        try {
+          const plants = [plant, plant === "olefin" ? "pta" : "olefin"];
+          renderRto(await api(`/rto/live?plant_codes=${encodeURIComponent(plants.join(","))}`));
+        } catch { /* transient RTO fetch failure — keep last rendered state */ }
+      }
+    }
     const k = live.stream_status === "ok" ? "ok" : live.stream_status === "stale" ? "stale" : "down";
     const q = live.quality ? (" · " + live.quality) : "";
     const src = live.source ? (" · " + live.source) : "";
@@ -506,6 +550,7 @@ document.getElementById("menuToggle")?.addEventListener("click", () => {
 });
 
 function setActiveView(view) {
+  currentView = view;
   document.querySelectorAll(".nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + view));
   document.querySelectorAll("#mainTabs [data-view-tab]").forEach((b) => {
@@ -841,7 +886,37 @@ async function runAnalyze() {
   return out;
 }
 
+/** FR-RTO-01 — render the continuously-recomputed live targets (RTO tab of Control). */
+function renderRto(data) {
+  const meta = document.getElementById("rtoMeta");
+  const body = document.getElementById("rtoBody");
+  if (!body) return;
+  if (meta) {
+    const t = data.computed_at ? new Date(data.computed_at).toISOString().slice(11, 19) + "Z" : "—";
+    meta.textContent = `computed ${t} · cycle ${fmt(data.cycle_seconds, 0)}s · total est. saving ${fmt(data.total_estimated_saving_kwh_per_h)} kWh/h`;
+  }
+  const units = data.units || [];
+  if (!units.length) { body.innerHTML = "<tr><td colspan='6'>waiting for live stream…</td></tr>"; return; }
+  body.innerHTML = units.map((u) => {
+    const tierBadge = u.tier === "low" ? "⚠ low" : "✓ high";
+    const deltaTxt = u.deltas && Object.keys(u.deltas).length
+      ? Object.entries(u.deltas).map(([k, v]) => `${k} ${v > 0 ? "+" : ""}${fmt(v, 1)}`).join(", ")
+      : "—";
+    return `<tr>
+    <td class="ltr">${plantLabel(u.plant_code)}</td>
+    <td class="ltr">${tierBadge}</td>
+    <td class="ltr">${fmt(u.energy_efficiency_percent, 1)}% / ${fmt(u.energy_intensity_kgoe_ton, 1)} kgoe/t</td>
+    <td class="ltr cell-wrap">${u.on_target ? "within high-efficiency band" : deltaTxt}</td>
+    <td class="ltr">${u.on_target ? "—" : fmt(u.estimated_energy_saving_kwh_per_h) + " kWh/h"}</td>
+  </tr>`;
+  }).join("");
+}
+
 async function loadControlLive() {
+  try {
+    const plants = [plantEl.value, plantEl.value === "olefin" ? "pta" : "olefin"];
+    renderRto(await api(`/rto/live?plant_codes=${encodeURIComponent(plants.join(","))}`));
+  } catch { /* transient — next 1 Hz tick retries while Control tab stays open */ }
   try {
     await runAnalyze();
   } catch (e) {

@@ -413,3 +413,39 @@ class LoginRequest(BaseModel):
     username: str
     password: str
     totp_code: str | None = Field(default=None, description="2FA code for settings changes")
+
+
+class RTOUnitTargetOut(BaseModel):
+    """FR-RTO-01 — one unit's live benchmark + (if low-tier) fresh setpoint target."""
+
+    plant_code: str
+    tier: Literal["high", "low"]
+    energy_efficiency_percent: float
+    energy_intensity_kgoe_ton: float
+    gap_pp_vs_best: float | None = None
+    benchmark_plant: str | None = None
+    on_target: bool
+    title: str | None = None
+    current: dict[str, float] | None = None
+    proposed: dict[str, float] | None = None
+    deltas: dict[str, float] | None = None
+    estimated_sec_reduction_pct: float = 0.0
+    estimated_energy_saving_kwh_per_h: float = 0.0
+
+
+class RTOLiveOut(BaseModel):
+    computed_at: datetime
+    cycle_seconds: float
+    total_estimated_saving_kwh_per_h: float = 0.0
+    units: list[RTOUnitTargetOut]
+
+
+class RTOStatusOut(BaseModel):
+    enabled: bool
+    running: bool
+    cycle_seconds: float
+    persist_interval_seconds: float
+    last_cycle_at: datetime | None = None
+    last_persisted_at: datetime | None = None
+    last_persisted_count: int = 0
+    last_error: str | None = None
