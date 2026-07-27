@@ -582,7 +582,6 @@ document.querySelectorAll("#mainTabs [data-view-tab]").forEach((btn) => {
     const view = btn.dataset.viewTab;
     if (view === "live") {
       if (btn.dataset.mode) chartMode = btn.dataset.mode;
-      if (btn.dataset.sub) chartMode = "carriers";
       setActiveView("live");
       document.querySelectorAll("#mainTabs [data-view-tab]").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
